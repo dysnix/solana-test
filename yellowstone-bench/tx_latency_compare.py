@@ -105,7 +105,7 @@ def compare_txns(file1, file2):
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:
-        print("Usage: python compare_txns_ns.py file1.json file2.json")
+        print("Usage: python tx_latency_compare.py file1.json file2.json")
         sys.exit(1)
 
     compare_txns(sys.argv[1], sys.argv[2])
