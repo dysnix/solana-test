@@ -1,0 +1,6 @@
+results*
+*.json
+*.log
+*.csv
+*.jsonl
+*.jsonl.gz
