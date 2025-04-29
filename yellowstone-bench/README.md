@@ -2,6 +2,13 @@
 
 This benchmark will make request to 2 endpoints, subscribe to all txs stream and compare which of them is faster.
 
+## Requirements
+
+Please install following tools on your machine.
+
+- `grpcurl`
+- `jq`
+
 ## Run benchmark
 
 1. Please configure adjustable variables inside `tx_latency_bench.sh` file.

@@ -42,6 +42,15 @@ parse_json() {
         }'
 }
 
+ensure_requirements() {
+    for i in jq grpcurl; do
+        if ! command -v ${i} &> /dev/null; then
+            echo "Required tool ${i} is not installed. Please install it and try again."
+            exit 1
+        fi
+    done
+}
+
 main() {
     subscribe_txs ${YELLOWSTONE_GRPC_URL_0} ${YELLOWSTONE_GRPC_X_TOKEN_0} | parse_json | tee -a "$FILENAME_0" &
     s0=$!
@@ -55,4 +64,5 @@ main() {
     echo "Benchmark complete! Stored results in: ${FILENAME_0} and ${FILENAME_1}"
 }
 
+ensure_requirements
 main
