@@ -1,6 +1,6 @@
 # RPC latency benchmark
 
-This benchmark will make 20 sequential requests RPCFast endpoint and show latency for every request.
+This benchmark will make 20 sequential requests to Solana RPCFast test endpoint and display the latency for every request.
 
 ## Requirements
 
