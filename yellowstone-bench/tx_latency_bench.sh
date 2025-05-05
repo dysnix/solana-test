@@ -28,7 +28,7 @@ SUBSCRIBE_REQUEST_JSON='{
 subscribe_txs() {
     grpcurl \
         -max-time ${BENCH_DURATION_SECONDS} \
-        -H 'X-Token: ${2}' \
+        -H "X-Token: ${2}" \
         -proto geyser.proto \
         -d "${SUBSCRIBE_REQUEST_JSON}" \
         ${1} \
