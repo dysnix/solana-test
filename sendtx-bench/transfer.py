@@ -25,12 +25,10 @@ import sys
 dotenv.load_dotenv()
 
 API_KEY = os.getenv("API_KEY")
-HELIUS_API_KEY = os.getenv("HELIUS_API_KEY")
+RPC_URL = os.getenv("RPC_URL", f"https://solana-rpc.rpcfast.net/trader/?api_key={API_KEY}&tx_submit_mode=balanced&tip_amount=1000000")
+WS_URL = os.getenv("WS_URL", f"wss://solana-rpc.rpcfast.net/ws/trader?api_key={API_KEY}")
 USDT_MINT = Pubkey.from_string("Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB")
-RPC_URL = f"https://solana-rpc.rpcfast.net/trader/?api_key={API_KEY}&tx_submit_mode=balanced&tip_amount=1000000"
-# RPC_URL = f"https://staked.helius-rpc.com/?api-key=${HELIUS_API_KEY}"
-# RPC_URL = f"https://solana-rpc.rpcfast.net/?api_key={API_KEY}"
-WS_URL = f"wss://solana-rpc.rpcfast.net/ws/trader?api_key={API_KEY}"
+RECEIVER_PUBKEY = os.getenv("RECEIVER_PUBLIC_KEY")
 
 
 async def get_priority_fee():
@@ -77,7 +75,7 @@ def run_transfer(priority_fee):
     with open("sender_pk.json", "rb") as f:
         secret_key = json.load(f)
     sender = Keypair.from_bytes(secret_key)
-    receiver_pubkey = os.getenv("RECEIVER_PUBLIC_KEY")
+    receiver_pubkey = RECEIVER_PUBKEY
 
     token = Token(client, USDT_MINT, TOKEN_PROGRAM_ID, sender)
     sender_acc = get_associated_token_address(sender.pubkey(), USDT_MINT)
@@ -213,7 +211,8 @@ def main():
 
         # Get fresh priority fee for each run
         print("\nGetting priority fee estimate...")
-        priority_fee = asyncio.run(get_priority_fee())
+        # priority_fee = asyncio.run(get_priority_fee())
+        priority_fee = 100_000
         print(f"Priority fee: {priority_fee}")
 
         result = run_transfer(priority_fee)
