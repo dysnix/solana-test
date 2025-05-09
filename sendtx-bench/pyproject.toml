@@ -6,4 +6,10 @@ requires-python = ">=3.13"
 dependencies = [
     "dotenv>=0.9.9",
     "solana>=0.36.6",
+    "websockets>=12.0",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.11.8",
 ]
