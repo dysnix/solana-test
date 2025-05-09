@@ -4,8 +4,10 @@ from solana.rpc.api import Client
 from solana.rpc.commitment import Confirmed
 from spl.token.client import Token
 from spl.token.constants import TOKEN_PROGRAM_ID
-from spl.token.instructions import get_associated_token_address
-from solana.rpc.types import TxOpts
+from spl.token.instructions import get_associated_token_address, transfer_checked, TransferCheckedParams
+from solders.transaction import Transaction
+from solders import compute_budget
+from solders.message import Message
 
 import time
 import os
@@ -85,17 +87,35 @@ print(f"From: {sender_ata}")
 print(f"To: {receiver_ata}")
 print(f"Amount: {amount}")
 
-token = Token(send_tx_client, USDT_MINT, TOKEN_PROGRAM_ID, sender)
-tx = token.transfer(
-    source=sender_ata,
-    dest=receiver_ata,
-    owner=sender.pubkey(),
-    amount=amount,
-    recent_blockhash=recent_blockhash
+# Create compute budget instruction for priority fee
+priority_fee_ix = compute_budget.set_compute_unit_price(100000)  # 0.1 SOL per million compute units
+
+# Create transfer instruction
+transfer_ix = transfer_checked(
+    TransferCheckedParams(
+        program_id=TOKEN_PROGRAM_ID,
+        source=sender_ata,
+        mint=USDT_MINT,
+        dest=receiver_ata,
+        owner=sender.pubkey(),
+        amount=amount,
+        decimals=6,
+        signers=[]
+    )
 )
 
+# Create transaction with both instructions
+message = Message.new_with_blockhash(
+    [priority_fee_ix, transfer_ix],
+    sender.pubkey(),
+    recent_blockhash
+)
+tx = Transaction.new_unsigned(message)
+tx.sign([sender], recent_blockhash=recent_blockhash)
+
 print("\nSending transaction...")
-signature = tx.value
+sent = send_tx_client.send_transaction(tx)
+signature = sent.value
 print("Transaction Signature:", signature)
 
 # Wait for confirmation
