@@ -24,11 +24,11 @@ dotenv.load_dotenv()
 
 API_KEY = os.getenv("API_KEY")
 USDT_MINT = Pubkey.from_string("Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB")
-RPC_URL = f"https://solana-rpc.rpcfast.net/?api_key={API_KEY}&tx_submit_mode=fastest&skip_preflight=true&tip_amount=1000000&mev_protect_level=low"
-WS_URL = f"wss://solana-rpc.rpcfast.net/ws/trader"
+RPC_URL = f"https://solana-rpc.rpcfast.net/trader/?api_key={API_KEY}&tx_submit_mode=fastest&skip_preflight=true&tip_amount=1000000"
+WS_URL = f"wss://solana-rpc.rpcfast.net/ws/trader?api_key={API_KEY}"
 
 async def get_priority_fee():
-    async with websockets.connect(WS_URL, additional_headers={"X-TOKEN": API_KEY}) as websocket:
+    async with websockets.connect(WS_URL) as websocket:
         # Subscribe to priority fee stream
         subscribe_msg = {
             "jsonrpc": "2.0",
@@ -68,7 +68,7 @@ receiver_acc = get_associated_token_address(
 )
 
 # Define amount
-amount = 100_000  # 0.1 USDT
+amount = 10_000  # 0.01 USDT
 
 # Check if receiver's token account exists
 print("\nChecking receiver's Associated Token Account...")
@@ -156,7 +156,7 @@ tx.sign([sender], recent_blockhash=recent_blockhash)
 
 print("\nSending transaction...")
 sent = send_tx_client.send_transaction(
-    tx, opts=TxOpts(preflight_commitment=Confirmed, max_retries=0)
+    tx, opts=TxOpts(preflight_commitment=Confirmed, max_retries=0, skip_preflight=True)
 )
 signature = sent.value
 print("Transaction Signature:", signature)
