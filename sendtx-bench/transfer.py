@@ -32,33 +32,33 @@ sender = Keypair.from_bytes(secret_key)
 receiver_pubkey = os.getenv("RECEIVER_PUBLIC_KEY")
 
 token = Token(client, USDT_MINT, TOKEN_PROGRAM_ID, sender)
-sender_ata = get_associated_token_address(sender.pubkey(), USDT_MINT)
-receiver_ata = get_associated_token_address(Pubkey.from_string(receiver_pubkey), USDT_MINT)
+sender_acc = get_associated_token_address(sender.pubkey(), USDT_MINT)
+receiver_acc = get_associated_token_address(Pubkey.from_string(receiver_pubkey), USDT_MINT)
 
 # Define amount
 amount = 100_000 # 0.1 USDT
 
-# Check if receiver's ATA exists
+# Check if receiver's token account exists
 print("\nChecking receiver's Associated Token Account...")
 try:
-    receiver_ata_info = client.get_account_info(receiver_ata)
-    if receiver_ata_info.value is None:
-        print("Receiver's ATA doesn't exist. Creating it...")
-        # Create receiver's ATA
-        create_ata_tx = token.create_associated_token_account(Pubkey.from_string(receiver_pubkey))
-        print(f"Create ATA transaction: {str(create_ata_tx)}")
-        # Wait for ATA creation to confirm
-        time.sleep(2)  # Give some time for the ATA to be created
+    receiver_acc_info = client.get_account_info(receiver_acc)
+    if receiver_acc_info.value is None:
+        print("Receiver's account doesn't exist. Creating it...")
+        # Create receiver's token account
+        create_acc_tx = token.create_associated_token_account(Pubkey.from_string(receiver_pubkey))
+        print(f"Create account transaction: {str(create_acc_tx)}")
+        # Wait for token account creation to confirm
+        time.sleep(2)  # Give some time for the account to be created
     else:
-        print("Receiver's ATA exists")
+        print("Receiver's token account exists")
 except Exception as e:
-    print(f"Error checking receiver's ATA: {e}")
+    print(f"Error checking receiver's account: {e}")
     exit(1)
 
 # Check sender's token balance
 print("\nChecking sender's token balance...")
 try:
-    sender_balance = token.get_balance(sender_ata)
+    sender_balance = token.get_balance(sender_acc)
     print(f"Sender's balance: {sender_balance.value.amount}")
     if int(sender_balance.value.amount) < amount:
         print(f"Error: Insufficient balance. Have: {sender_balance.value.amount}, Need: {amount}")
@@ -67,8 +67,8 @@ except Exception as e:
     print(f"Error checking sender's balance: {e}")
     exit(1)
 
-sender_ata = get_associated_token_address(sender.pubkey(), USDT_MINT)
-receiver_ata = get_associated_token_address(Pubkey.from_string(receiver_pubkey), USDT_MINT)
+sender_acc = get_associated_token_address(sender.pubkey(), USDT_MINT)
+receiver_acc = get_associated_token_address(Pubkey.from_string(receiver_pubkey), USDT_MINT)
 
 # Fetch recent block info (before send)
 pre_slot = client.get_slot(commitment=Confirmed).value
@@ -83,8 +83,8 @@ print(f"Current slot: {pre_slot}")
 
 # Create and send transaction
 print("\nCreating transfer transaction...")
-print(f"From: {sender_ata}")
-print(f"To: {receiver_ata}")
+print(f"From: {sender_acc}")
+print(f"To: {receiver_acc}")
 print(f"Amount: {amount}")
 
 # Create compute budget instruction for priority fee
@@ -94,9 +94,9 @@ priority_fee_ix = compute_budget.set_compute_unit_price(100000)  # 0.1 SOL per m
 transfer_ix = transfer_checked(
     TransferCheckedParams(
         program_id=TOKEN_PROGRAM_ID,
-        source=sender_ata,
+        source=sender_acc,
         mint=USDT_MINT,
-        dest=receiver_ata,
+        dest=receiver_acc,
         owner=sender.pubkey(),
         amount=amount,
         decimals=6,
