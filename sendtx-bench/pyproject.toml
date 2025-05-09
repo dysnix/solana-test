@@ -1,0 +1,9 @@
+[project]
+name = "sendtx-bench"
+version = "0.1.0"
+description = "Send tx benchmark"
+requires-python = ">=3.13"
+dependencies = [
+    "dotenv>=0.9.9",
+    "solana>=0.36.6",
+]
