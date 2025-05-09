@@ -1,0 +1,81 @@
+{
+  "results": [
+    {
+      "pre_slot": 338888893,
+      "confirmed_slot": 338888895,
+      "slot_diff": 2,
+      "time_diff": 1,
+      "priority_fee": 2500000
+    },
+    {
+      "pre_slot": 338888900,
+      "confirmed_slot": 338888904,
+      "slot_diff": 4,
+      "time_diff": 2,
+      "priority_fee": 2500000
+    },
+    {
+      "pre_slot": 338888909,
+      "confirmed_slot": 338888915,
+      "slot_diff": 6,
+      "time_diff": 2,
+      "priority_fee": 2500000
+    },
+    {
+      "pre_slot": 338888920,
+      "confirmed_slot": 338888924,
+      "slot_diff": 4,
+      "time_diff": 2,
+      "priority_fee": 2500000
+    },
+    {
+      "pre_slot": 338888929,
+      "confirmed_slot": 338888932,
+      "slot_diff": 3,
+      "time_diff": 1,
+      "priority_fee": 2500000
+    },
+    {
+      "pre_slot": 338888936,
+      "confirmed_slot": 338888940,
+      "slot_diff": 4,
+      "time_diff": 2,
+      "priority_fee": 2500000
+    },
+    {
+      "pre_slot": 338888946,
+      "confirmed_slot": 338888952,
+      "slot_diff": 6,
+      "time_diff": 2,
+      "priority_fee": 2500000
+    },
+    {
+      "pre_slot": 338888958,
+      "confirmed_slot": 338888968,
+      "slot_diff": 10,
+      "time_diff": 4,
+      "priority_fee": 2500000
+    },
+    {
+      "pre_slot": 338888972,
+      "confirmed_slot": 338888976,
+      "slot_diff": 4,
+      "time_diff": 2,
+      "priority_fee": 2500000
+    },
+    {
+      "pre_slot": 338888981,
+      "confirmed_slot": 338888986,
+      "slot_diff": 5,
+      "time_diff": 3,
+      "priority_fee": 2500000
+    }
+  ],
+  "averages": {
+    "avg_slot_diff": 4.8,
+    "avg_time_diff": 2.1,
+    "avg_priority_fee": 2500000.0,
+    "successful_runs": 10,
+    "total_runs": 10
+  }
+}
