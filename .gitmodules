@@ -1,4 +1,4 @@
-[submodule "shredstream-proxy"]
+[submodule "jito-shredstream-proxy"]
 	path = jito-shredstream-proxy
-	url = https://github.com/jito-labs/shredstream-proxy
+	url = https://github.com/dysnix/shredstream-proxy
 	branch = master
