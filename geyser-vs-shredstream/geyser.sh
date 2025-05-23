@@ -55,7 +55,7 @@ main() {
 
     while read -r line; do
         sig=$(echo "$line" | base64 -d | base58)
-        echo "$(date -u '+%Y-%m-%dT%H:%M:%S.%N%:z') $sig" | tee -a "$FILENAME"
+        echo "$(date -u '+%Y-%m-%dT%H:%M:%S.%N%:Z') $sig" | tee -a "$FILENAME"
     done < <(subscribe_txs ${YELLOWSTONE_GRPC_URL} ${YELLOWSTONE_GRPC_X_TOKEN} | parse_json) &
     s=$!
 
