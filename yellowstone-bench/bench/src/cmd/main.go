@@ -112,8 +112,9 @@ func subscribe(ctx context.Context, url string, token *string, file *os.File, wg
 			}
 			timeCreated := msg.CreatedAt.AsTime().UTC().Format(time.RFC3339Nano)
 			if msg.GetTransaction() != nil {
-				if len(msg.GetTransaction().Transaction.Transaction.GetSignatures()) > 0 {
-					_, err := fmt.Fprintf(file, "%s %s\n", timeCreated, base58.Encode(msg.GetTransaction().Transaction.Transaction.Signatures[0]))
+				tx := msg.GetTransaction().Transaction.GetSignature()
+				if tx != nil {
+					_, err := fmt.Fprintf(file, "%s %s\n", timeCreated, base58.Encode(tx))
 					if err != nil {
 						log.Printf("failed to write to file: %v", err)
 						wg.Done()
