@@ -81,24 +81,20 @@ func subscribe(ctx context.Context, url string, token *string, file *os.File, wg
 	go func() {
 		defer close(msgChan)
 		for {
+			msg, err := stream.Recv()
+			if err != nil {
+				if ctx.Err() == context.DeadlineExceeded {
+					// exceeded benchmark duration
+					return
+				}
+				log.Fatalf("failed to receive message from %s: %v", url, err)
+				return
+			}
+
 			select {
+			case msgChan <- msg:
 			case <-ctx.Done():
 				return
-			default:
-				msg, err := stream.Recv()
-				if err != nil {
-					if ctx.Err() == context.DeadlineExceeded {
-						// exceeded benchmark duration
-						return
-					}
-					log.Printf("failed to receive message: %v", err)
-					return
-				}
-				select {
-				case msgChan <- msg:
-				case <-ctx.Done():
-					return
-				}
 			}
 		}
 	}()
