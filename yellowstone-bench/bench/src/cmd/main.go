@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	geyserpb "github.com/dysnix/yellowstone-bench/proto"
@@ -19,7 +20,7 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
-func bench(ctx context.Context, url string, token *string, file *os.File) {
+func subscribe(ctx context.Context, url string, token *string, file *os.File, wg *sync.WaitGroup) {
 	hostname := strings.Split(url, ":")[0]
 	port := strings.Split(url, ":")[1]
 
@@ -66,27 +67,61 @@ func bench(ctx context.Context, url string, token *string, file *os.File) {
 		log.Fatalf("failed to subscribe to %s: %v", url, err)
 	}
 
+	log.Printf("subscribed for transactions to %s", url)
+
 	err = stream.Send(&subscription)
 	if err != nil {
 		log.Fatalf("failed to send subscription to %s: %v", url, err)
 	}
 
+	// Create a channel for receiving messages
+	msgChan := make(chan *geyserpb.SubscribeUpdate, 100) // Buffer size of 100 to prevent blocking
+
+	// Start a goroutine to receive messages
+	go func() {
+		defer close(msgChan)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				msg, err := stream.Recv()
+				if err != nil {
+					if ctx.Err() == context.DeadlineExceeded {
+						// exceeded benchmark duration
+						return
+					}
+					log.Printf("failed to receive message: %v", err)
+					return
+				}
+				select {
+				case msgChan <- msg:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+
+	// Process messages until context is done
 	for {
 		select {
 		case <-ctx.Done():
-			fmt.Println("Goroutine timed out or cancelled")
+			wg.Done()
 			return
-		default:
-			msg, err := stream.Recv()
-			if err != nil {
-				log.Fatalf("failed to receive message: %v", err)
+		case msg, ok := <-msgChan:
+			if !ok {
+				wg.Done()
+				return
 			}
 			timeCreated := msg.CreatedAt.AsTime().UTC().Format(time.RFC3339Nano)
 			if msg.GetTransaction() != nil {
 				if len(msg.GetTransaction().Transaction.Transaction.GetSignatures()) > 0 {
 					_, err := fmt.Fprintf(file, "%s %s\n", timeCreated, base58.Encode(msg.GetTransaction().Transaction.Transaction.Signatures[0]))
 					if err != nil {
-						log.Fatalf("failed to write to file: %v", err)
+						log.Printf("failed to write to file: %v", err)
+						wg.Done()
+						return
 					}
 				}
 			}
@@ -94,9 +129,122 @@ func bench(ctx context.Context, url string, token *string, file *os.File) {
 	}
 }
 
+type BenchmarkStats struct {
+	matchCount  int
+	file0Faster int
+	file1Faster int
+	totalDiff   time.Duration
+}
+
+type TransactionData map[string]time.Time
+
+func parseTransactionFile(content string) (TransactionData, error) {
+	transactions := make(TransactionData)
+
+	for line := range strings.SplitSeq(content, "\n") {
+		if line == "" {
+			continue
+		}
+
+		parts := strings.Split(line, " ")
+		if len(parts) != 2 {
+			continue
+		}
+
+		timestamp, err := time.Parse(time.RFC3339Nano, parts[0])
+		if err != nil {
+			return nil, fmt.Errorf("error parsing timestamp: %v", err)
+		}
+
+		transactions[parts[1]] = timestamp
+	}
+
+	return transactions, nil
+}
+
+func calculateStats(txs0 TransactionData, txs1 TransactionData) BenchmarkStats {
+	var stats BenchmarkStats
+
+	for txHash, t1 := range txs0 {
+		if t2, exists := txs1[txHash]; exists {
+			stats.matchCount++
+			diff := t1.Sub(t2)
+
+			if diff < 0 {
+				stats.file0Faster++
+			} else if diff > 0 {
+				stats.file1Faster++
+			}
+			stats.totalDiff += diff
+		}
+	}
+
+	return stats
+}
+
+func printBenchmarkResults(stats BenchmarkStats, url1 string, url2 string) {
+	if stats.matchCount == 0 {
+		log.Printf("No matching transactions found")
+		return
+	}
+
+	log.Printf("Found %d matching transactions across %s and %s", stats.matchCount, url1, url2)
+
+	// Calculate percentages
+	file0Percentage := float64(stats.file0Faster) / float64(stats.matchCount) * 100
+	file1Percentage := float64(stats.file1Faster) / float64(stats.matchCount) * 100
+
+	log.Printf("%s was faster in %d cases (%.2f%%)",
+		url1, stats.file0Faster, file0Percentage)
+	log.Printf("%s was faster in %d cases (%.2f%%)",
+		url2, stats.file1Faster, file1Percentage)
+
+	// Calculate and display average time difference
+	avgDiff := stats.totalDiff / time.Duration(stats.matchCount)
+	if avgDiff < 0 {
+		log.Printf("%s is ahead of %s by %v", url1, url2, -avgDiff)
+	} else if avgDiff > 0 {
+		log.Printf("%s is ahead of %s by %v", url2, url1, avgDiff)
+	} else {
+		log.Printf("both endpoints perform equally")
+	}
+}
+
+func bench(url1 string, url2 string) {
+
+	// Read results
+	file0, err := os.ReadFile("txs_0.txt")
+	if err != nil {
+		log.Fatalf("failed to read txs_0.txt: %v", err)
+	}
+
+	file1, err := os.ReadFile("txs_1.txt")
+	if err != nil {
+		log.Fatalf("failed to read txs_1.txt: %v", err)
+	}
+
+	// Parse results
+	txs0, err := parseTransactionFile(string(file0))
+	if err != nil {
+		log.Fatalf("failed to parse txs_0.txt: %v", err)
+	}
+
+	txs1, err := parseTransactionFile(string(file1))
+	if err != nil {
+		log.Fatalf("failed to parse txs_1.txt: %v", err)
+	}
+
+	// Calculate differences
+	stats := calculateStats(txs0, txs1)
+
+	// Print final results
+	printBenchmarkResults(stats, url1, url2)
+}
+
 func main() {
 	var url1, token1, url2, token2 string
 	var duration time.Duration
+	wg := &sync.WaitGroup{}
 
 	flag.StringVar(&url1, "url1", "", "URL of the first geyser node")
 	flag.StringVar(&token1, "token1", "", "Token of the first geyser node")
@@ -107,13 +255,23 @@ func main() {
 
 	file1, _ := os.Create("txs_0.txt")
 	file2, _ := os.Create("txs_1.txt")
-	defer file1.Close()
-	defer file2.Close()
+
+	defer func() {
+		file1.Close()
+		file2.Close()
+		os.Remove(file1.Name())
+		os.Remove(file2.Name())
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), duration)
 	defer cancel()
 
-	go bench(ctx, url1, &token1, file1)
-	go bench(ctx, url2, &token2, file2)
-	select {}
+	wg.Add(1)
+	go subscribe(ctx, url1, &token1, file1, wg)
+	wg.Add(1)
+	go subscribe(ctx, url2, &token2, file2, wg)
+
+	wg.Wait()
+
+	bench(url1, url2)
 }
