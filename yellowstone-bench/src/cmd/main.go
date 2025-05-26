@@ -20,13 +20,38 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
-func subscribe(ctx context.Context, url string, token *string, file *os.File, wg *sync.WaitGroup) {
+type BenchmarkStats struct {
+	matchCount  int
+	file0Faster int
+	file1Faster int
+	totalDiff   time.Duration
+}
+
+type TransactionData map[string]time.Time
+
+type StringSlice []string
+
+func (s *StringSlice) String() string { return fmt.Sprintf("%v", *s) }
+func (s *StringSlice) Set(val string) error {
+	*s = append(*s, val)
+	return nil
+}
+
+var subscribeRequest = geyserpb.SubscribeRequest{
+	Transactions: map[string]*geyserpb.SubscribeRequestFilterTransactions{
+		"alltxs": {
+			AccountInclude: []string{"6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"}, // pump.fun
+		},
+	},
+}
+
+func subscribe(ctx context.Context, url string, token *string, file *os.File, wg *sync.WaitGroup) error {
 	hostname := strings.Split(url, ":")[0]
 	port := strings.Split(url, ":")[1]
 
 	ips, err := net.DefaultResolver.LookupIP(context.Background(), "ip4", hostname)
 	if err != nil || len(ips) == 0 {
-		log.Fatalf("no IPv4 address found for %s: %+v", url, err)
+		return fmt.Errorf("no IPv4 address found for %s: %+v", url, err)
 	}
 	ipAddr := ips[0].String()
 
@@ -46,49 +71,41 @@ func subscribe(ctx context.Context, url string, token *string, file *os.File, wg
 		grpc.WithTransportCredentials(creds),
 	)
 	if err != nil {
-		log.Fatalf("failed to connect to %s: %v", url, err)
+		return fmt.Errorf("failed to connect to %s: %v", url, err)
 	}
 	defer conn.Close()
 
 	client := geyserpb.NewGeyserClient(conn)
-
-	subscription := geyserpb.SubscribeRequest{}
-
-	subscription.Transactions = make(map[string]*geyserpb.SubscribeRequestFilterTransactions)
-	subscription.Transactions["alltxs"] = &geyserpb.SubscribeRequestFilterTransactions{
-		AccountInclude: []string{"6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"},
-	}
 
 	md := metadata.New(map[string]string{"x-token": *token})
 	ctx = metadata.NewOutgoingContext(ctx, md)
 
 	stream, err := client.Subscribe(ctx)
 	if err != nil {
-		log.Fatalf("failed to subscribe to %s: %v", url, err)
+		return fmt.Errorf("failed to subscribe to %s: %v", url, err)
 	}
 
-	log.Printf("subscribed for transactions to %s", url)
+	log.Printf("subscribed to %s: %s", url, subscribeRequest.String())
 
-	err = stream.Send(&subscription)
+	err = stream.Send(&subscribeRequest)
 	if err != nil {
-		log.Fatalf("failed to send subscription to %s: %v", url, err)
+		return fmt.Errorf("failed to make subscription request to %s: %v", url, err)
 	}
 
 	// Create a channel for receiving messages
 	msgChan := make(chan *geyserpb.SubscribeUpdate, 100) // Buffer size of 100 to prevent blocking
+	errc := make(chan error)
 
 	// Start a goroutine to receive messages
 	go func() {
-		defer close(msgChan)
 		for {
 			msg, err := stream.Recv()
 			if err != nil {
-				if ctx.Err() == context.DeadlineExceeded {
+				if err == context.DeadlineExceeded {
 					// exceeded benchmark duration
 					return
 				}
-				log.Fatalf("failed to receive message from %s: %v", url, err)
-				return
+				errc <- err
 			}
 
 			select {
@@ -104,11 +121,14 @@ func subscribe(ctx context.Context, url string, token *string, file *os.File, wg
 		select {
 		case <-ctx.Done():
 			wg.Done()
-			return
+			return nil
+		case err := <-errc:
+			wg.Done()
+			return fmt.Errorf("failed to receive message from %s: %v", url, err)
 		case msg, ok := <-msgChan:
 			if !ok {
 				wg.Done()
-				return
+				return nil
 			}
 			timeCreated := msg.CreatedAt.AsTime().UTC().Format(time.RFC3339Nano)
 			if msg.GetTransaction() != nil {
@@ -116,24 +136,14 @@ func subscribe(ctx context.Context, url string, token *string, file *os.File, wg
 				if tx != nil {
 					_, err := fmt.Fprintf(file, "%s %s\n", timeCreated, base58.Encode(tx))
 					if err != nil {
-						log.Printf("failed to write to file: %v", err)
 						wg.Done()
-						return
+						return fmt.Errorf("failed to write to file: %v", err)
 					}
 				}
 			}
 		}
 	}
 }
-
-type BenchmarkStats struct {
-	matchCount  int
-	file0Faster int
-	file1Faster int
-	totalDiff   time.Duration
-}
-
-type TransactionData map[string]time.Time
 
 func parseTransactionFile(content string) (TransactionData, error) {
 	transactions := make(TransactionData)
@@ -179,13 +189,12 @@ func calculateStats(txs0 TransactionData, txs1 TransactionData) BenchmarkStats {
 	return stats
 }
 
-func printBenchmarkResults(stats BenchmarkStats, url1 string, url2 string) {
+func printBenchmarkResults(stats BenchmarkStats, url1 string, url2 string) error {
 	if stats.matchCount == 0 {
-		log.Printf("No matching transactions found")
-		return
+		return fmt.Errorf("no matching transactions found")
 	}
 
-	log.Printf("Found %d matching transactions across %s and %s", stats.matchCount, url1, url2)
+	log.Printf("Found %d matching transactions", stats.matchCount)
 
 	// Calculate percentages
 	file0Percentage := float64(stats.file0Faster) / float64(stats.matchCount) * 100
@@ -205,70 +214,111 @@ func printBenchmarkResults(stats BenchmarkStats, url1 string, url2 string) {
 	} else {
 		log.Printf("both endpoints perform equally")
 	}
+
+	return nil
 }
 
-func bench(url1 string, url2 string) {
+func bench(url1 string, url2 string, files []*os.File) error {
+	txsMap := make(map[string]TransactionData)
 
-	// Read results
-	file0, err := os.ReadFile("txs_0.txt")
-	if err != nil {
-		log.Fatalf("failed to read txs_0.txt: %v", err)
+	for _, file := range files {
+		content, err := os.ReadFile(file.Name())
+		if err != nil {
+			return fmt.Errorf("failed to read %s: %v", file.Name(), err)
+		}
+
+		txs, err := parseTransactionFile(string(content))
+		if err != nil {
+			return fmt.Errorf("failed to parse %s: %v", file.Name(), err)
+		}
+
+		txsMap[file.Name()] = txs
 	}
 
-	file1, err := os.ReadFile("txs_1.txt")
+	stats := calculateStats(txsMap[files[0].Name()], txsMap[files[1].Name()])
+	err := printBenchmarkResults(stats, url1, url2)
 	if err != nil {
-		log.Fatalf("failed to read txs_1.txt: %v", err)
+		return err
 	}
 
-	// Parse results
-	txs0, err := parseTransactionFile(string(file0))
-	if err != nil {
-		log.Fatalf("failed to parse txs_0.txt: %v", err)
-	}
-
-	txs1, err := parseTransactionFile(string(file1))
-	if err != nil {
-		log.Fatalf("failed to parse txs_1.txt: %v", err)
-	}
-
-	// Calculate differences
-	stats := calculateStats(txs0, txs1)
-
-	// Print final results
-	printBenchmarkResults(stats, url1, url2)
+	return nil
 }
 
 func main() {
 	var url1, token1, url2, token2 string
-	var duration time.Duration
-	wg := &sync.WaitGroup{}
+	var filesArg StringSlice
+	var files []*os.File
+	var benchDuration time.Duration
 
-	flag.StringVar(&url1, "url1", "", "URL of the first geyser node")
-	flag.StringVar(&token1, "token1", "", "Token of the first geyser node")
-	flag.StringVar(&url2, "url2", "", "URL of the second geyser node")
-	flag.StringVar(&token2, "token2", "", "Token of the second geyser node")
-	flag.DurationVar(&duration, "duration", 5*time.Minute, "Duration of the benchmark")
+	flag.StringVar(&url1, "url1", "solana-yellowstone-grpc.rpcfast.net:443", "URL of the first geyser node")
+	flag.StringVar(&token1, "token1", "solana-yellowstone-grpc.rpcfast.net:443", "Token of the first geyser node")
+	flag.StringVar(&url2, "url2", "abcdef123", "URL of the second geyser node")
+	flag.StringVar(&token2, "token2", "abcdef123", "Token of the second geyser node")
+	flag.DurationVar(&benchDuration, "duration", 5*time.Minute, "Duration of the benchmark")
+	flag.Var(&filesArg, "file", "File to write the geyser node's transactions to")
+
 	flag.Parse()
 
-	file1, _ := os.Create("txs_0.txt")
-	file2, _ := os.Create("txs_1.txt")
+	if len(filesArg) != 2 {
+		log.Fatalf("Please specify 2 files")
+	}
+
+	for _, file := range filesArg {
+		file, err := os.Create(file)
+		files = append(files, file)
+		if err != nil {
+			log.Printf("failed to create file %s: %v", file.Name(), err)
+			return
+		}
+	}
 
 	defer func() {
-		file1.Close()
-		file2.Close()
-		os.Remove(file1.Name())
-		os.Remove(file2.Name())
+		for _, file := range files {
+			file.Close()
+			os.Remove(file.Name())
+		}
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), duration)
+	ctx, cancel := context.WithTimeout(context.Background(), benchDuration)
 	defer cancel()
 
-	wg.Add(1)
-	go subscribe(ctx, url1, &token1, file1, wg)
-	wg.Add(1)
-	go subscribe(ctx, url2, &token2, file2, wg)
+	errsCh := make(chan error, 2)
+	done := make(chan struct{})
 
-	wg.Wait()
+	wg := &sync.WaitGroup{}
 
-	bench(url1, url2)
+	wg.Add(1)
+	go func() {
+		errsCh <- subscribe(ctx, url1, &token1, files[0], wg)
+	}()
+
+	wg.Add(1)
+	go func() {
+		errsCh <- subscribe(ctx, url2, &token2, files[1], wg)
+	}()
+
+	go func() {
+		for err := range errsCh {
+			if err != nil {
+				log.Printf("subscribe failed: %v", err)
+				close(done)
+				return
+			}
+		}
+	}()
+
+	// wait for all subscriptions to finish or error
+	select {
+	case <-done:
+		return
+	case <-ctx.Done():
+		// wait for all subscriptions to finish
+		wg.Wait()
+	}
+
+	err := bench(url1, url2, files)
+	if err != nil {
+		log.Printf("bench failed: %v", err)
+		return
+	}
 }

@@ -4,3 +4,4 @@ results*
 *.csv
 *.jsonl
 *.jsonl.gz
+*.txt
