@@ -85,7 +85,7 @@ func subscribe(ctx context.Context, url string, token *string, file *os.File, wg
 		return fmt.Errorf("failed to subscribe to %s: %v", url, err)
 	}
 
-	log.Printf("subscribed for transactions to %s", url)
+	log.Printf("subscribed to %s: %s", url, subscribeRequest.String())
 
 	err = stream.Send(&subscribeRequest)
 	if err != nil {
@@ -250,14 +250,18 @@ func main() {
 	var files []*os.File
 	var benchDuration time.Duration
 
-	flag.StringVar(&url1, "url1", "", "URL of the first geyser node")
-	flag.StringVar(&token1, "token1", "", "Token of the first geyser node")
-	flag.StringVar(&url2, "url2", "", "URL of the second geyser node")
-	flag.StringVar(&token2, "token2", "", "Token of the second geyser node")
+	flag.StringVar(&url1, "url1", "solana-yellowstone-grpc.rpcfast.net:443", "URL of the first geyser node")
+	flag.StringVar(&token1, "token1", "solana-yellowstone-grpc.rpcfast.net:443", "Token of the first geyser node")
+	flag.StringVar(&url2, "url2", "abcdef123", "URL of the second geyser node")
+	flag.StringVar(&token2, "token2", "abcdef123", "Token of the second geyser node")
 	flag.DurationVar(&benchDuration, "duration", 5*time.Minute, "Duration of the benchmark")
-	flag.Var(&filesArg, "file", "Files to write the geyser node's transactions to (specify 2 files)")
+	flag.Var(&filesArg, "file", "File to write the geyser node's transactions to")
 
 	flag.Parse()
+
+	if len(filesArg) != 2 {
+		log.Fatalf("Please specify 2 files")
+	}
 
 	for _, file := range filesArg {
 		file, err := os.Create(file)
