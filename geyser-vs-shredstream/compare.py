@@ -16,29 +16,9 @@ def parse_timestamp_line(line):
         return None, None
 
 def format_time_diff(timestamp1, timestamp2):
-    # Calculate difference in seconds with ns precision
-    diff = abs((timestamp1 - timestamp2).total_seconds())
-
-    # Convert to hours, minutes, seconds, and nanoseconds
-    hours = int(diff // 3600)
-    minutes = int((diff % 3600) // 60)
-    seconds = int(diff % 60)
-    nanoseconds = int((diff - int(diff)) * 1_000_000_000)
-
-    # Format the string
-    parts = []
-    if hours > 0:
-        parts.append(f"{hours}h")
-    if minutes > 0 or hours > 0:
-        parts.append(f"{minutes}m")
-    if seconds > 0 or minutes > 0 or hours > 0:
-        parts.append(f"{seconds}s")
-    if nanoseconds > 0:
-        # Format nanoseconds to 3 digits
-        ns_str = f"{nanoseconds:03d}"[:3]  # Take first 3 digits
-        parts.append(f"{ns_str}ns")
-
-    return "".join(parts) if parts else "0s"
+    # Calculate difference in milliseconds
+    diff = abs((timestamp1 - timestamp2).total_seconds() * 1000)
+    return f"{diff:.3f}ms"
 
 def get_time_diff_seconds(timestamp1, timestamp2):
     # Calculate difference in seconds with ms precision
@@ -49,30 +29,14 @@ def compare_timestamps(file1_path, file2_path):
     # Dictionary to store timestamps for each transaction hash
     tx_timestamps = defaultdict(dict)
 
-    # Debug: Print first few lines from each file
-    print("\nDebug: First few lines from each file:")
-    print("\nFile 1:")
     with open(file1_path, 'r') as f1:
         for i, line in enumerate(f1):
-            if i < 3:  # Print first 3 lines
-                timestamp, tx_hash = parse_timestamp_line(line)
-                if timestamp and tx_hash:
-                    print(f"Original: {line.strip()}")
-                    print(f"Parsed: {timestamp.isoformat()} {tx_hash}")
-                    print()
             timestamp, tx_hash = parse_timestamp_line(line)
             if timestamp and tx_hash:
                 tx_timestamps[tx_hash]['file1'] = timestamp
 
-    print("\nFile 2:")
     with open(file2_path, 'r') as f2:
         for i, line in enumerate(f2):
-            if i < 3:  # Print first 3 lines
-                timestamp, tx_hash = parse_timestamp_line(line)
-                if timestamp and tx_hash:
-                    print(f"Original: {line.strip()}")
-                    print(f"Parsed: {timestamp.isoformat()} {tx_hash}")
-                    print()
             timestamp, tx_hash = parse_timestamp_line(line)
             if timestamp and tx_hash:
                 tx_timestamps[tx_hash]['file2'] = timestamp
@@ -82,48 +46,62 @@ def compare_timestamps(file1_path, file2_path):
     file2_earlier = 0
     same_time = 0
     total_compared = 0
-    total_diff_seconds = 0
-    max_diff_seconds = 0
-    min_diff_seconds = float('inf')
-
-    print("\nCompared Transactions:")
-    print("=" * 100)
-    print(f"{'Transaction Hash':<64} {'File 1 Timestamp':<30} {'File 2 Timestamp':<30} {'Diff':<15}")
-    print("-" * 100)
+    
+    # Track differences when each file is earlier
+    file1_earlier_diffs = []  # How much earlier file1 is
+    file2_earlier_diffs = []  # How much earlier file2 is
 
     for tx_hash, timestamps in tx_timestamps.items():
         if 'file1' in timestamps and 'file2' in timestamps:
             total_compared += 1
-            diff_seconds = get_time_diff_seconds(timestamps['file1'], timestamps['file2'])
-            total_diff_seconds += diff_seconds
-            max_diff_seconds = max(max_diff_seconds, diff_seconds)
-            min_diff_seconds = min(min_diff_seconds, diff_seconds) if diff_seconds > 0 else min_diff_seconds
-
-            # Print comparison details
-            diff_str = format_time_diff(timestamps['file1'], timestamps['file2'])
-            print(f"{tx_hash:<64} {timestamps['file1'].isoformat():<30} {timestamps['file2'].isoformat():<30} {diff_str:<15}")
 
             if timestamps['file1'] < timestamps['file2']:
                 file1_earlier += 1
+                # How much earlier file1 is
+                diff_seconds = (timestamps['file2'] - timestamps['file1']).total_seconds()
+                file1_earlier_diffs.append(diff_seconds)
             elif timestamps['file1'] > timestamps['file2']:
                 file2_earlier += 1
+                # How much earlier file2 is
+                diff_seconds = (timestamps['file1'] - timestamps['file2']).total_seconds()
+                file2_earlier_diffs.append(diff_seconds)
             else:
                 same_time += 1
 
-    print("=" * 100)
-
     # Print results
-    print(f"\nComparison Results:")
+    print(f"Results:")
     print(f"Total transactions compared: {total_compared}")
-    print(f"{os.path.basename(file1_path)} earlier: {file1_earlier}")
-    print(f"{os.path.basename(file2_path)} earlier: {file2_earlier}")
-    print(f"Same timestamp: {same_time}")
+    
+    # Calculate percentages
+    file1_earlier_pct = (file1_earlier / total_compared * 100) if total_compared > 0 else 0
+    file2_earlier_pct = (file2_earlier / total_compared * 100) if total_compared > 0 else 0
+    same_time_pct = (same_time / total_compared * 100) if total_compared > 0 else 0
+    
+    print(f"{os.path.basename(file1_path)} earlier: {file1_earlier} ({file1_earlier_pct:.1f}%)")
+    print(f"{os.path.basename(file2_path)} earlier: {file2_earlier} ({file2_earlier_pct:.1f}%)")
+    print(f"Same timestamp: {same_time} ({same_time_pct:.1f}%)")
+    
     if total_compared > 0:
-        avg_diff_seconds = total_diff_seconds / total_compared
-        print(f"\nTime Difference Statistics:")
-        print(f"Average difference: {format_time_diff(datetime.now(), datetime.now() + timedelta(seconds=avg_diff_seconds))}")
-        print(f"Maximum difference: {format_time_diff(datetime.now(), datetime.now() + timedelta(seconds=max_diff_seconds))}")
-        print(f"Minimum difference: {format_time_diff(datetime.now(), datetime.now() + timedelta(seconds=min_diff_seconds))}")
+        # Calculate and print average differences when each file is earlier
+        if file1_earlier > 0:
+            avg_file1_earlier = sum(file1_earlier_diffs) / file1_earlier
+            max_file1_earlier = max(file1_earlier_diffs)
+            min_file1_earlier = min(file1_earlier_diffs)
+            print(f"\nWhen {os.path.basename(file1_path)} is earlier:")
+            print(f"Average time earlier: {format_time_diff(datetime.now(), datetime.now() + timedelta(seconds=avg_file1_earlier))}")
+            print(f"Maximum time earlier: {format_time_diff(datetime.now(), datetime.now() + timedelta(seconds=max_file1_earlier))}")
+            print(f"Minimum time earlier: {format_time_diff(datetime.now(), datetime.now() + timedelta(seconds=min_file1_earlier))}")
+            print(f"Number of cases: {file1_earlier}")
+        
+        if file2_earlier > 0:
+            avg_file2_earlier = sum(file2_earlier_diffs) / file2_earlier
+            max_file2_earlier = max(file2_earlier_diffs)
+            min_file2_earlier = min(file2_earlier_diffs)
+            print(f"\nWhen {os.path.basename(file2_path)} is earlier:")
+            print(f"Average time earlier: {format_time_diff(datetime.now(), datetime.now() + timedelta(seconds=avg_file2_earlier))}")
+            print(f"Maximum time earlier: {format_time_diff(datetime.now(), datetime.now() + timedelta(seconds=max_file2_earlier))}")
+            print(f"Minimum time earlier: {format_time_diff(datetime.now(), datetime.now() + timedelta(seconds=min_file2_earlier))}")
+            print(f"Number of cases: {file2_earlier}")
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:
