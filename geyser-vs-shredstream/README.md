@@ -10,28 +10,28 @@ bash bench.sh \
     --yellowstone-token <token> \
     --shredstream-url <url> \
     --shredstream-token <token> \
-    [--duration <duration>]
+    [--duration <duration_in_seconds>]
 ```
 
 ## Results
-ShredStream gRPC is faster in ~70% of cases, and it outperforms Yellowstone by 30-40ms on average, with the maximum by ~450ms.
+ShredStream gRPC is faster in ~87% of cases, and it outperforms Yellowstone by ~50ms on average, with the maximum by ~2.3s.
 
 ```log
 Results:
-Total transactions compared: 1254320
-deshred.txt earlier: 881425 (70.3%)
-yellowstone.txt earlier: 372850 (29.7%)
-Same timestamp: 45 (0.0%)
+Total transactions compared: 4801635
+deshred.txt earlier: 4202493 (87.5%)
+yellowstone.txt earlier: 599008 (12.5%)
+Same timestamp: 134 (0.0%)
 
 When deshred.txt is earlier:
-Average time earlier: 34.885ms
-Maximum time earlier: 434.856ms
+Average time earlier: 48.983ms
+Maximum time earlier: 2304.942ms
 Minimum time earlier: 0.001ms
-Number of cases: 881425
+Number of cases: 4202493
 
 When yellowstone.txt is earlier:
-Average time earlier: 46.903ms
-Maximum time earlier: 885.845ms
+Average time earlier: 52.126ms
+Maximum time earlier: 2988.924ms
 Minimum time earlier: 0.001ms
-Number of cases: 372850
+Number of cases: 599008
 ```

@@ -28,8 +28,8 @@ deshred_pid=$!
 ./bin/yellowstone_${OS}_${ARCH} -url ${YELLOWSTONE_GRPC_URL} -token ${YELLOWSTONE_GRPC_X_TOKEN} -duration "${BENCH_DURATION}s" -save -file results/yellowstone.txt &
 yellowstone_pid=$!
 
-sleep ${BENCH_DURATION}
+trap "kill -9 $deshred_pid $yellowstone_pid; rm results/deshred.txt results/yellowstone.txt" EXIT INT TERM
 
-trap "{ kill -9 $deshred_pid; kill -9 $yellowstone_pid; rm results/deshred.txt results/yellowstone.txt; }" EXIT INT TERM
+sleep ${BENCH_DURATION}
 
 $(which python) compare.py results/deshred.txt results/yellowstone.txt

@@ -16,6 +16,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
 )
 
@@ -56,9 +57,24 @@ func subscribe(ctx context.Context, url string, token string, file *os.File) err
 		})
 	}
 
+	opts := []grpc.DialOption{
+		grpc.WithTransportCredentials(creds),
+		grpc.WithKeepaliveParams(keepalive.ClientParameters{
+			Time:                10 * time.Second, // More frequent keepalive pings
+			Timeout:             time.Second,      // Shorter timeout for keepalive
+			PermitWithoutStream: true,
+		}),
+		grpc.WithDefaultCallOptions(
+			grpc.MaxCallRecvMsgSize(32*1024*1024),
+			grpc.MaxCallSendMsgSize(32*1024*1024),
+		),
+		grpc.WithInitialWindowSize(1024 * 1024),     // 1MB initial window size
+		grpc.WithInitialConnWindowSize(1024 * 1024), // 1MB initial connection window size
+	}
+
 	conn, err := grpc.NewClient(
 		fmt.Sprintf("%s:%s", ipAddr, port),
-		grpc.WithTransportCredentials(creds),
+		opts...,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to connect to %s: %v", url, err)
@@ -77,14 +93,53 @@ func subscribe(ctx context.Context, url string, token string, file *os.File) err
 
 	log.Printf("subscribed to %s: %s", url, subscribeRequest.String())
 
+	// Create a channel for receiving messages
+	msgChan := make(chan *geyserpb.SubscribeUpdate, 100) // Buffer size of 100 to prevent blocking
+	errc := make(chan error, 1)                          // Buffered channel to prevent blocking
+
 	err = stream.Send(&subscribeRequest)
 	if err != nil {
 		return fmt.Errorf("failed to make subscription request to %s: %v", url, err)
 	}
 
-	// Create a channel for receiving messages
-	msgChan := make(chan *geyserpb.SubscribeUpdate, 100) // Buffer size of 100 to prevent blocking
-	errc := make(chan error)
+	// Proactive reconnection before 10-minute mark
+	go func() {
+		ticker := time.NewTicker(9 * time.Minute) // Reconnect every 9 minutes
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				log.Printf("performing proactive reconnection")
+
+				// Close the old stream
+				if err := stream.CloseSend(); err != nil {
+					log.Printf("error closing old stream: %v", err)
+				}
+
+				// Create new stream
+				newStream, err := client.Subscribe(ctx)
+				if err != nil {
+					log.Printf("failed to create new stream during proactive reconnection: %v", err)
+					continue
+				}
+
+				// Send subscription request
+				err = newStream.Send(&subscribeRequest)
+				if err != nil {
+					log.Printf("failed to make subscription request during proactive reconnection: %v", err)
+					continue
+				}
+
+				// Update stream reference
+				stream = newStream
+				log.Printf("successfully reconnected proactively")
+
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 
 	// Start a goroutine to receive messages
 	go func() {
@@ -112,7 +167,8 @@ func subscribe(ctx context.Context, url string, token string, file *os.File) err
 		case <-ctx.Done():
 			return nil
 		case err := <-errc:
-			return fmt.Errorf("failed to receive message from %s: %v", url, err)
+			log.Printf("failed to receive message from %s: %v", url, err)
+			continue
 		case msg, ok := <-msgChan:
 			if !ok {
 				return nil
