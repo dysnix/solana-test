@@ -14,24 +14,23 @@ bash bench.sh \
 ```
 
 ## Results
-ShredStream gRPC is faster in ~87% of cases, and it outperforms Yellowstone by ~50ms on average, with the maximum by ~2.3s.
+ShredStream gRPC is faster than Yellowstone gRPC in ~65% of cases by ~32ms on average, with the maximum speed gain by ~1.3s.
 
 ```log
-Results:
-Total transactions compared: 4801635
-deshred.txt earlier: 4202493 (87.5%)
-yellowstone.txt earlier: 599008 (12.5%)
-Same timestamp: 134 (0.0%)
+Total transactions compared: 2078707
+deshred.txt earlier: 1341106 (64.5%)
+yellowstone.txt earlier: 737561 (35.5%)
+Same timestamp: 40 (0.0%)
 
 When deshred.txt is earlier:
-Average time earlier: 48.983ms
-Maximum time earlier: 2304.942ms
+Average time earlier: 32.819ms
+Maximum time earlier: 1323.036ms
 Minimum time earlier: 0.001ms
-Number of cases: 4202493
+Number of cases: 1341106
 
 When yellowstone.txt is earlier:
-Average time earlier: 52.126ms
-Maximum time earlier: 2988.924ms
+Average time earlier: 44.706ms
+Maximum time earlier: 359.574ms
 Minimum time earlier: 0.001ms
-Number of cases: 599008
+Number of cases: 737561
 ```
