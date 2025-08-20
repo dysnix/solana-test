@@ -106,10 +106,6 @@ export class RpcMethodGenerator {
     }
   }
 
-  generateRandomSlot(): number {
-    return Math.floor(Math.random() * 1000000000) + 1000000000;
-  }
-
   generateRandomBlockNumber(): number {
     if (this.minBlockNumber === null) {
       // If initialization hasn't completed yet, use fallback
@@ -117,21 +113,6 @@ export class RpcMethodGenerator {
     }
     const maxBlock = this.minBlockNumber + 30000; // Add some range above the minimum block
     return Math.floor(Math.random() * (maxBlock - this.minBlockNumber)) + this.minBlockNumber;
-  }
-
-  generateRandomLimit(): number {
-    const limits = [10, 50, 100, 500, 1000];
-    return limits[Math.floor(Math.random() * limits.length)];
-  }
-
-  generateRandomCommitment(): Commitment {
-    const commitments = Object.values(Commitment);
-    return commitments[Math.floor(Math.random() * commitments.length)];
-  }
-
-  generateRandomEncoding(): Encoding {
-    const encodings = Object.values(Encoding);
-    return encodings[Math.floor(Math.random() * encodings.length)];
   }
 
   getSlot(): RpcRequest {
@@ -245,17 +226,5 @@ export class RpcMethodGenerator {
       this.getBlock(),
       this.getLatestBlockhash()
     ];
-  }
-
-  // Method to get method statistics
-  getMethodStats(): { [key: string]: { complexity: 'low' | 'medium' | 'high', avgLatency?: number } } {
-    return {
-      [RpcMethod.GET_SLOT]: { complexity: 'low' },
-      [RpcMethod.GET_LATEST_BLOCKHASH]: { complexity: 'low' },
-      [RpcMethod.GET_TRANSACTION]: { complexity: 'medium' },
-      [RpcMethod.GET_MULTIPLE_ACCOUNTS]: { complexity: 'medium' },
-      [RpcMethod.GET_PROGRAM_ACCOUNTS]: { complexity: 'high' },
-      [RpcMethod.GET_BLOCK]: { complexity: 'high' },
-    };
   }
 }
