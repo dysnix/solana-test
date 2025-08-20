@@ -153,7 +153,7 @@ export class RpcMethodGenerator {
       params: [
         await this.generateRandomSignature(),
         {
-          encoding: Encoding.JSON_PARSED,
+          encoding: Encoding.BASE64,
           commitment: Commitment.CONFIRMED,
           maxSupportedTransactionVersion: 0
         }
@@ -172,7 +172,7 @@ export class RpcMethodGenerator {
       params: [
         accounts,
         {
-          encoding: Encoding.JSON_PARSED,
+          encoding: Encoding.BASE64,
           commitment: Commitment.CONFIRMED
         }
       ]
@@ -187,7 +187,7 @@ export class RpcMethodGenerator {
       params: [
         this.generateRandomPublicKey(),
         {
-          encoding: Encoding.JSON_PARSED,
+          encoding: Encoding.BASE64,
           commitment: Commitment.CONFIRMED,
         }
       ]
