@@ -18,7 +18,6 @@ export interface LogContext {
 export class Logger {
   private static instance: Logger;
   private logLevel: LogLevel = LogLevel.INFO;
-  private isVerbose: boolean = false;
   private logBuffer: string[] = [];
   private maxBufferSize: number = 1000;
 
@@ -33,13 +32,6 @@ export class Logger {
 
   setLogLevel(level: LogLevel): void {
     this.logLevel = level;
-  }
-
-  setVerbose(verbose: boolean): void {
-    this.isVerbose = verbose;
-    if (verbose && this.logLevel > LogLevel.DEBUG) {
-      this.logLevel = LogLevel.DEBUG;
-    }
   }
 
   private formatMessage(level: LogLevel, message: string, context?: LogContext): string {

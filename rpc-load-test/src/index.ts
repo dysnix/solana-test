@@ -25,9 +25,10 @@ program
   .option('--max-retries <number>', 'Maximum number of retries for failed requests', '3')
   .option('--retry-delay <ms>', 'Delay between retries in milliseconds', '1000')
   .option('--health-check-interval <ms>', 'Health check interval in milliseconds', '5000')
+  .option('--health-monitoring', 'Enable health monitoring', true)
   .option('--dry-run', 'Show what would be tested without running', false)
   .option('--progress', 'Show real-time progress', false)
-  .option('--verbose', 'Enable verbose logging', false)
+  // .option('--verbose', 'Enable verbose logging', false)
   .option('--output-format <format>', 'Output format: text, json, or csv', 'text')
   .option('--output-file <file>', 'Output file for results', '')
   .option('--log-level <level>', 'Log level: debug, info, warn, error, silent', 'info');
@@ -40,9 +41,9 @@ async function main() {
   try {
     // Initialize logger
     const logger = Logger.getInstance();
-    const logLevel = LogLevel[options.logLevel.toUpperCase() as keyof typeof LogLevel] || LogLevel.INFO;
+    const logLevelStr = options.logLevel.toUpperCase();
+    const logLevel = LogLevel[logLevelStr as keyof typeof LogLevel];
     logger.setLogLevel(logLevel);
-    logger.setVerbose(options.verbose);
 
     logger.section('SOLANA RPC LOAD TEST');
     
@@ -57,6 +58,7 @@ async function main() {
       maxRetries: parseInt(options.maxRetries),
       retryDelay: parseInt(options.retryDelay),
       healthCheckInterval: parseInt(options.healthCheckInterval),
+      progress: options.progress,
       gracefulShutdown: true
     };
 
@@ -94,24 +96,9 @@ async function main() {
 
     // Create and run load tester
     const loadTester = new SolanaRpcLoadTester(config);
-    
-    // Start progress monitoring if enabled
-    let progressInterval: NodeJS.Timeout | null = null;
-    if (options.progress) {
-      progressInterval = setInterval(() => {
-        const stats = loadTester.getCurrentStats();
-        ResultsReporter.printRealTimeStats(stats.requests, stats.errors, stats.elapsed);
-      }, 1000);
-    }
 
     logger.info('🚀 Starting load test...');
     const results = await loadTester.run();
-
-    // Clear progress display
-    if (progressInterval) {
-      clearInterval(progressInterval);
-      Logger.getInstance().clearProgress();
-    }
 
     // Display results
     ResultsReporter.printResults(results);

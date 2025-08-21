@@ -41,7 +41,9 @@ export interface LoadTestConfig {
   maxRetries?: number;
   retryDelay?: number;
   healthCheckInterval?: number;
+  healthMonitoring?: boolean;
   gracefulShutdown?: boolean;
+  progress?: boolean;
 }
 
 export interface LoadTestResults {

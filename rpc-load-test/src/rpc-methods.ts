@@ -23,7 +23,7 @@ export class RpcMethodGenerator {
     try {
       const connection = await this.getConnection();
       this.minBlockNumber = await connection.getMinimumLedgerSlot();
-      this.logger.info('Initialized minimum block number', { minBlockNumber: this.minBlockNumber });
+      this.logger.debug('Initialized minimum block number', { minBlockNumber: this.minBlockNumber });
     } catch (error) {
       this.logger.warn('Failed to get first available block, will use fallback', { error: error instanceof Error ? error.message : String(error) });
       this.minBlockNumber = 100000000; // Fallback to original minimum

@@ -1,4 +1,4 @@
-import axios, { AxiosResponse, AxiosError } from 'axios';
+import axios, { AxiosResponse } from 'axios';
 import { RpcRequest, RpcResponse, TestResult, LoadTestConfig, LoadTestResults, WorkerStats, HealthCheckResult } from './types';
 import { RpcMethodGenerator } from './rpc-methods';
 import { Logger } from './logger';
@@ -70,12 +70,12 @@ export class SolanaRpcLoadTester {
     this.logger.info(`⏱️  Timeout: ${this.config.timeout}ms`);
     this.logger.info(`🔄 Max retries: ${this.config.maxRetries}`);
     this.logger.info(`💚 Health check interval: ${this.config.healthCheckInterval}ms`);
-    this.logger.info(`Methods: ${this.config.methods.length > 0 ? this.config.methods.join(', ') : 'All methods'}`);
+    this.logger.info(`⚙️  Methods: ${this.config.methods.length > 0 ? this.config.methods.join(', ') : 'All methods'}`);
 
     // Wait for RPC method generator initialization to complete
-    this.logger.info('⏳ Waiting for RPC method generator initialization...');
+    this.logger.debug('Waiting for RPC method generator initialization...');
     await this.rpcMethodGenerator.waitForInitialization();
-    this.logger.info('✅ RPC method generator initialized');
+    this.logger.debug('RPC method generator initialized');
 
     this.logger.debug('Load test methods configuration', { 
       methods: this.config.methods, 
@@ -95,14 +95,17 @@ export class SolanaRpcLoadTester {
     }
 
     // Start health monitoring
-    this.startHealthMonitoring();
+    if (this.config.healthMonitoring) {
+      this.startHealthMonitoring();
+    }
     
     // Start progress monitoring
-    this.startProgressMonitoring();
+    if (this.config.progress) {
+      this.startProgressMonitoring();
+    }
   }
 
   private async waitForCompletion(): Promise<void> {
-    this.logger.info(`⏰ Waiting for ${this.config.duration} seconds...`);
     
     // Wait for duration
     await new Promise(resolve => setTimeout(resolve, this.config.duration * 1000));
@@ -488,14 +491,6 @@ export class SolanaRpcLoadTester {
     const actualDuration = (this.endTime - this.startTime) / 1000;
     const maxRps = this.requestCount / actualDuration;
     const actualRps = this.results.length / actualDuration;
-
-    this.logger.section('Load Test Summary');
-    this.logger.info(`Total requests sent: ${this.results.length}`);
-    this.logger.info(`Successful: ${successfulResults.length}`);
-    this.logger.info(`Failed: ${failedResults.length}`);
-    this.logger.info(`Success Rate: ${((successfulResults.length / this.results.length) * 100).toFixed(2)}%`);
-    this.logger.info(`Max RPS Achieved: ${maxRps.toFixed(2)}`);
-    this.logger.info(`Actual RPS: ${actualRps.toFixed(2)}`);
 
     return {
       totalRequests: this.results.length,

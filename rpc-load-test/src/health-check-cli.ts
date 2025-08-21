@@ -31,7 +31,6 @@ async function main() {
     const logger = Logger.getInstance();
     const logLevel = LogLevel[options.logLevel.toUpperCase() as keyof typeof LogLevel] || LogLevel.INFO;
     logger.setLogLevel(logLevel);
-    logger.setVerbose(options.verbose);
 
     logger.section('SOLANA RPC HEALTH CHECK');
     

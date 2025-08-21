@@ -6,7 +6,10 @@ export class ResultsReporter {
   private static logger = Logger.getInstance();
 
   static printResults(results: LoadTestResults): void {
-    this.logger.section('SOLANA RPC LOAD TEST RESULTS');
+    // Always show results regardless of log level
+    console.log('\n' + chalk.bold.blue('─'.repeat(60)));
+    console.log(chalk.bold.blue('📋 SOLANA RPC LOAD TEST RESULTS'));
+    console.log(chalk.bold.blue('─'.repeat(60)));
 
     // Summary
     this.printSummary(results);
@@ -28,28 +31,28 @@ export class ResultsReporter {
   }
 
   private static printSummary(results: LoadTestResults): void {
-    this.logger.section('SUMMARY');
-    this.logger.info(`Total Requests:     ${results.totalRequests.toLocaleString()}`);
-    this.logger.info(`Successful:         ${results.successfulRequests.toLocaleString()}`);
-    this.logger.info(`Failed:             ${results.failedRequests.toLocaleString()}`);
-    this.logger.info(`Success Rate:       ${((results.successfulRequests / results.totalRequests) * 100).toFixed(2)}%`);
-    this.logger.info(`Max RPS Achieved:   ${results.maxRps.toFixed(2)}`);
-    this.logger.info(`Actual RPS:         ${results.actualRps.toFixed(2)}`);
-    this.logger.info(`Test Duration:      ${results.testDuration.toFixed(2)}s`);
+    console.log('\n' + chalk.bold.blue('📋 SUMMARY'));
+    console.log(`Total Requests:     ${results.totalRequests.toLocaleString()}`);
+    console.log(`Successful:         ${results.successfulRequests.toLocaleString()}`);
+    console.log(`Failed:             ${results.failedRequests.toLocaleString()}`);
+    console.log(`Success Rate:       ${((results.successfulRequests / results.totalRequests) * 100).toFixed(2)}%`);
+    console.log(`Max RPS Achieved:   ${results.maxRps.toFixed(2)}`);
+    console.log(`Actual RPS:         ${results.actualRps.toFixed(2)}`);
+    console.log(`Test Duration:      ${results.testDuration.toFixed(2)}s`);
   }
 
   private static printLatencyStats(results: LoadTestResults): void {
-    this.logger.section('LATENCY STATISTICS (ms)');
-    this.logger.info(`Average:            ${results.avgLatency.toFixed(2)}`);
-    this.logger.info(`Median (P50):       ${results.p50Latency.toFixed(2)}`);
-    this.logger.info(`95th Percentile:    ${results.p95Latency.toFixed(2)}`);
-    this.logger.info(`99th Percentile:    ${results.p99Latency.toFixed(2)}`);
-    this.logger.info(`Minimum:            ${results.minLatency.toFixed(2)}`);
-    this.logger.info(`Maximum:            ${results.maxLatency.toFixed(2)}`);
+    console.log('\n' + chalk.bold.blue('📋 LATENCY STATISTICS (ms)'));
+    console.log(`Average:            ${results.avgLatency.toFixed(2)}`);
+    console.log(`Median (P50):       ${results.p50Latency.toFixed(2)}`);
+    console.log(`95th Percentile:    ${results.p95Latency.toFixed(2)}`);
+    console.log(`99th Percentile:    ${results.p99Latency.toFixed(2)}`);
+    console.log(`Minimum:            ${results.minLatency.toFixed(2)}`);
+    console.log(`Maximum:            ${results.maxLatency.toFixed(2)}`);
   }
 
   private static printMethodBreakdown(results: LoadTestResults): void {
-    this.logger.section('METHOD BREAKDOWN');
+    console.log('\n' + chalk.bold.blue('📋 METHOD BREAKDOWN'));
     
     // Header
     console.log(`${chalk.cyan('Method'.padEnd(25))} | ${chalk.green('Success'.padStart(8))} | ${chalk.red('Failed'.padStart(8))} | ${chalk.yellow('Rate%'.padStart(8))} | ${chalk.cyan('Avg(ms)'.padStart(10))} | ${chalk.blue('P95(ms)'.padStart(10))}`);
@@ -83,7 +86,7 @@ export class ResultsReporter {
   private static printWorkerStats(workerStats: WorkerStats[]): void {
     if (workerStats.length === 0) return;
 
-    this.logger.section('WORKER STATISTICS');
+    console.log('\n' + chalk.bold.blue('📋 WORKER STATISTICS'));
     
     // Header
     console.log(`${chalk.cyan('Worker'.padEnd(8))} | ${chalk.green('Requests'.padStart(10))} | ${chalk.red('Errors'.padStart(8))} | ${chalk.yellow('Avg Latency'.padStart(12))} | ${chalk.blue('Runtime'.padStart(10))}`);
@@ -122,11 +125,11 @@ export class ResultsReporter {
 
   private static printErrorAnalysis(results: LoadTestResults): void {
     if (results.errors.length === 0) {
-      this.logger.section('NO ERRORS DETECTED');
+      console.log('\n' + chalk.bold.blue('📋 NO ERRORS DETECTED'));
       return;
     }
 
-    this.logger.section('ERROR ANALYSIS');
+    console.log('\n' + chalk.bold.blue('📋 ERROR ANALYSIS'));
     
     // Sort errors by count (descending)
     const sortedErrors = results.errors.sort((a, b) => b.count - a.count);
@@ -152,7 +155,6 @@ export class ResultsReporter {
     
     this.logger.info(`Throughput:         ${throughput.toFixed(2)} req/s`);
     this.logger.info(`Error Rate:         ${errorRate.toFixed(2)}%`);
-    this.logger.info(`Total Latency:      ${(results.totalLatency / 1000).toFixed(2)}s`);
     
     // Performance grade
     let grade = 'F';
@@ -176,27 +178,6 @@ export class ResultsReporter {
     }
     
     this.logger.info(`Performance Grade:  ${gradeColor(grade)}`);
-  }
-
-  static printProgress(current: number, total: number, elapsed: number): void {
-    const percentage = ((current / total) * 100).toFixed(1);
-    const remaining = total - current;
-    const eta = remaining > 0 ? (elapsed / current) * remaining : 0;
-    
-    process.stdout.write(`\r${chalk.cyan('Progress:')} ${chalk.green(percentage + '%')} | ${chalk.yellow('ETA:')} ${chalk.cyan(eta.toFixed(1) + 's')} | ${chalk.blue('Elapsed:')} ${chalk.cyan(elapsed.toFixed(1) + 's')}`);
-  }
-
-  static printRealTimeStats(requests: number, errors: number, elapsed: number): void {
-    const rps = elapsed > 0 ? requests / elapsed : 0;
-    const errorRate = requests > 0 ? (errors / requests) * 100 : 0;
-    
-    process.stdout.write(
-      `\r${chalk.cyan('Requests:')} ${chalk.green(requests)} | ` +
-      `${chalk.red('Errors:')} ${chalk.red(errors)} | ` +
-      `${chalk.yellow('RPS:')} ${chalk.yellow(rps.toFixed(2))} | ` +
-      `${chalk.red('Error Rate:')} ${chalk.red(errorRate.toFixed(2) + '%')} | ` +
-      `${chalk.blue('Time:')} ${chalk.cyan(elapsed.toFixed(1) + 's')}`
-    );
   }
 
   // Export results to JSON
