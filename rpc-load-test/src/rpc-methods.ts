@@ -46,7 +46,11 @@ export class RpcMethodGenerator {
 
   private async getConnection(): Promise<Connection> {
     if (!this.connection) {
-      this.connection = new Connection(this.config.endpoint, 'confirmed');
+      this.connection = new Connection(this.config.endpoint, {
+          commitment: Commitment.CONFIRMED,
+          disableRetryOnRateLimit: true
+        }
+      );
     }
     return this.connection;
   }
@@ -59,40 +63,35 @@ export class RpcMethodGenerator {
     return result;
   }
 
-  async getLatestBlockhashFromRpc(): Promise<string> {
-    try {
-      const connection = await this.getConnection();
-      const blockhash = await connection.getLatestBlockhash();
-      return blockhash.blockhash;
-    } catch (error) {
-      this.logger.warn('Failed to get latest blockhash from RPC, using fallback', { error: error instanceof Error ? error.message : String(error) });
-      // Fallback to a mock blockhash
-      return this.generateRandomBase58(44);
-    }
-  }
+  // async getLatestBlockhashFromRpc(): Promise<string> {
+    // try {
+    //   const connection = await this.getConnection();
+    //   const blockhash = await connection.getLatestBlockhash();
+    //   this.logger.debug('Latest blockhash', { blockhash: blockhash.blockhash });
+    //   return blockhash.blockhash;
+    // } catch (error) {
+    //   this.logger.warn('Failed to get latest blockhash from RPC, using fallback', { error: error instanceof Error ? error.message : String(error) });
+    //   // Fallback to a mock blockhash
+    //   return this.generateRandomBase58(44);
+    // }
+  // }
 
-  async generateRandomSignature(): Promise<string> {
-    try {
-      const transaction = new Transaction();
-      const keypair = Keypair.generate();
-      transaction.instructions.push(new TransactionInstruction({
-        keys: [],
-        programId: new PublicKey('11111111111111111111111111111111'),
-        data: Buffer.from([])
-      }));
-      transaction.recentBlockhash = await this.getLatestBlockhashFromRpc();
-      transaction.sign(keypair);
-      
-      if (!transaction.signature) {
-        throw new Error('Failed to generate transaction signature');
-      }
-      
-      return base58.encode(transaction.signature);
-    } catch (error) {
-      this.logger.warn('Failed to generate real signature, using fallback', { error: error instanceof Error ? error.message : String(error) });
-      // Fallback to a mock signature
-      return this.generateRandomBase58(88);
+  generateRandomSignature(): string {
+    const transaction = new Transaction();
+    const keypair = Keypair.generate();
+    transaction.instructions.push(new TransactionInstruction({
+      keys: [],
+      programId: new PublicKey('11111111111111111111111111111111'),
+      data: Buffer.from([])
+    }));
+    transaction.recentBlockhash = this.generateRandomPublicKey();
+    transaction.sign(keypair);
+
+    if (!transaction.signature) {
+      throw new Error('Failed to generate transaction signature');
     }
+
+    return base58.encode(transaction.signature);
   }
 
   generateRandomPublicKey(): string {
@@ -126,13 +125,13 @@ export class RpcMethodGenerator {
     };
   }
 
-  async getTransaction(): Promise<RpcRequest> {
+  getTransaction(): RpcRequest {
     return {
       jsonrpc: '2.0',
       id: Math.floor(Math.random() * 1000000),
       method: RpcMethod.GET_TRANSACTION,
       params: [
-        await this.generateRandomSignature(),
+        this.generateRandomSignature(),
         {
           encoding: Encoding.BASE64,
           commitment: Commitment.CONFIRMED,
@@ -215,16 +214,5 @@ export class RpcMethodGenerator {
     
     const randomMethod = methods[Math.floor(Math.random() * methods.length)];
     return randomMethod();
-  }
-
-  async getAllMethods(): Promise<RpcRequest[]> {
-    return [
-      this.getSlot(),
-      await this.getTransaction(),
-      this.getMultipleAccounts(),
-      this.getProgramAccounts(),
-      this.getBlock(),
-      this.getLatestBlockhash()
-    ];
   }
 }
