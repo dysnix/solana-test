@@ -22,7 +22,7 @@ export class RpcMethodGenerator {
   private async initializeMinBlockNumber(): Promise<void> {
     try {
       const connection = await this.getConnection();
-      this.minBlockNumber = await connection.getMinimumLedgerSlot();
+      this.minBlockNumber = await connection.getFirstAvailableBlock();
       this.logger.debug('Initialized minimum block number', { minBlockNumber: this.minBlockNumber });
     } catch (error) {
       this.logger.warn('Failed to get first available block, will use fallback', { error: error instanceof Error ? error.message : String(error) });
@@ -110,7 +110,7 @@ export class RpcMethodGenerator {
       // If initialization hasn't completed yet, use fallback
       return Math.floor(Math.random() * 100000000) + 100000000;
     }
-    const maxBlock = this.minBlockNumber + 30000; // Add some range above the minimum block
+    const maxBlock = this.minBlockNumber + 3000; // Add some range above the minimum block
     return Math.floor(Math.random() * (maxBlock - this.minBlockNumber)) + this.minBlockNumber;
   }
 
