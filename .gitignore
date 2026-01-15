@@ -1,2 +1,4 @@
 .venv
 .envrc
+.DS_Store
+.env
