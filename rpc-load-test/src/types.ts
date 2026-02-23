@@ -40,12 +40,12 @@ export interface LoadTestConfig {
   concurrent: number;
   methods: string[];
   timeout: number; // milliseconds
-  maxRetries?: number;
-  retryDelay?: number;
   healthCheckInterval?: number;
   healthMonitoring?: boolean;
   gracefulShutdown?: boolean;
   progress?: boolean;
+  maxRetries?: number;
+  retryDelay?: number;
 }
 
 export interface LoadTestResults {

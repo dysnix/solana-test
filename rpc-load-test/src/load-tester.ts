@@ -19,6 +19,7 @@ export class SolanaRpcLoadTester {
   private workers: Map<number, Promise<void>> = new Map();
   private healthCheckInterval: NodeJS.Timeout | null = null;
   private progressInterval: NodeJS.Timeout | null = null;
+  private nextRequestSlotMs: number = 0;
 
   constructor(config: Partial<LoadTestConfig>) {
     this.config = ConfigValidator.validate(config);
@@ -62,14 +63,14 @@ export class SolanaRpcLoadTester {
     this.requestCount = 0;
     this.errorCount = 0;
     this.startTime = Date.now();
+    this.nextRequestSlotMs = this.startTime;
 
-    this.logger.section('Load Test Configuration');
+    this.logger.section('Load Test Runtime Settings');
     this.logger.info(`🚀 Starting load test for ${this.config.duration}s at ${this.config.rps} RPS`);
     this.logger.info(`📡 Endpoint: ${this.config.endpoint}`);
     this.logger.info(`🔌 WebSocket: ${this.config.websocketEndpoint ?? 'none (mock data)'}`);
     this.logger.info(`🔀 Concurrent connections: ${this.config.concurrent}`);
     this.logger.info(`⏱️  Timeout: ${this.config.timeout}ms`);
-    this.logger.info(`🔄 Max retries: ${this.config.maxRetries}`);
     this.logger.info(`💚 Health check interval: ${this.config.healthCheckInterval}ms`);
     this.logger.info(`⚙️  Methods: ${this.config.methods.length > 0 ? this.config.methods.join(', ') : 'All methods'}`);
 
@@ -84,14 +85,12 @@ export class SolanaRpcLoadTester {
       willUseRandom: this.config.methods.length === 0 
     });
 
-    const interval = 1000 / (this.config.rps / this.config.concurrent);
-    
     this.logger.info(`🔄 Starting ${this.config.concurrent} worker threads...`);
-    this.logger.info(`⏱️  Target RPS: ${this.config.rps}, Workers: ${this.config.concurrent}, Interval per worker: ${interval.toFixed(2)}ms`);
+    this.logger.info(`⏱️  Target RPS: ${this.config.rps}, Workers: ${this.config.concurrent}, Global rate limiter: enabled`);
     
     // Start concurrent workers
     for (let i = 0; i < this.config.concurrent; i++) {
-      const workerPromise = this.worker(i, interval);
+      const workerPromise = this.worker(i);
       this.workers.set(i, workerPromise);
     }
 
@@ -171,13 +170,13 @@ export class SolanaRpcLoadTester {
     }, 1000);
   }
 
-  private async worker(workerId: number, interval: number): Promise<void> {
+  private async worker(workerId: number): Promise<void> {
     const workerStartTime = Date.now();
     let requestsProcessed = 0;
     let errors = 0;
     let totalLatency = 0;
     
-    this.logger.debug(`Worker ${workerId} started`, { workerId, interval });
+    this.logger.debug(`Worker ${workerId} started`, { workerId });
     
     try {
       while (this.isRunning && !this.isShuttingDown) {
@@ -218,11 +217,6 @@ export class SolanaRpcLoadTester {
           this.results.push(result);
         }
 
-        // Rate limiting
-        const elapsed = Date.now() - startTime;
-        if (elapsed < interval) {
-          await new Promise(resolve => setTimeout(resolve, interval - elapsed));
-        }
       }
     } finally {
       const workerEndTime = Date.now();
@@ -243,6 +237,18 @@ export class SolanaRpcLoadTester {
         errors, 
         avgLatency: avgLatency.toFixed(2) 
       });
+    }
+  }
+
+  private async acquireRequestSlot(): Promise<void> {
+    const now = Date.now();
+    const minIntervalMs = 1000 / this.config.rps;
+    const scheduledAt = Math.max(now, this.nextRequestSlotMs);
+    this.nextRequestSlotMs = scheduledAt + minIntervalMs;
+
+    const waitMs = scheduledAt - now;
+    if (waitMs > 0) {
+      await new Promise(resolve => setTimeout(resolve, waitMs));
     }
   }
 
@@ -279,6 +285,7 @@ export class SolanaRpcLoadTester {
   }
 
   private async makeRequest(request: RpcRequest, workerId: number, attempt: number = 1): Promise<TestResult> {
+    await this.acquireRequestSlot();
     const startTime = Date.now();
     
     this.logger.debug(`Sending ${request.method} request`, { 
@@ -366,19 +373,6 @@ export class SolanaRpcLoadTester {
         errorMessage = error.message;
       }
 
-      // Retry logic
-      if (attempt < (this.config.maxRetries || 3) && this.shouldRetry(error)) {
-        this.logger.debug(`Retrying ${request.method} (attempt ${attempt + 1})`, { 
-          workerId, 
-          method: request.method, 
-          attempt, 
-          error: errorMessage 
-        });
-        
-        await new Promise(resolve => setTimeout(resolve, this.config.retryDelay || 1000));
-        return this.makeRequest(request, workerId, attempt + 1);
-      }
-
       this.logger.debug(`${request.method} failed permanently`, { 
         workerId, 
         method: request.method, 
@@ -400,14 +394,6 @@ export class SolanaRpcLoadTester {
         attempt
       };
     }
-  }
-
-  private shouldRetry(error: any): boolean {
-    if (axios.isAxiosError(error)) {
-      // Retry on network errors, timeouts, and 5xx server errors
-      return !error.response || (error.response.status >= 500 && error.response.status < 600);
-    }
-    return false;
   }
 
   private async healthCheck(): Promise<HealthCheckResult> {

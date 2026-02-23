@@ -151,7 +151,9 @@ export class ResultsReporter {
   private static printPerformanceMetrics(results: LoadTestResults): void {
     this.logger.section('PERFORMANCE METRICS');
     
-    const throughput = results.successfulRequests / (results.totalLatency / 1000);
+    const throughput = results.testDuration > 0
+      ? results.successfulRequests / results.testDuration
+      : 0;
     const errorRate = (results.failedRequests / results.totalRequests) * 100;
     
     this.logger.info(`Throughput:         ${throughput.toFixed(2)} req/s`);

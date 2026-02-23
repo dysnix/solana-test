@@ -92,7 +92,7 @@ export class ConfigValidator {
       duration: 60,
       rps: 100,
       concurrent: 10,
-      timeout: 30000,
+      timeout: 1000,
       maxRetries: 3,
       retryDelay: 1000,
       healthCheckInterval: 5000,

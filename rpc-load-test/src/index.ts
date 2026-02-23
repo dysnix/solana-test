@@ -23,8 +23,6 @@ program
   .option('-c, --concurrent <number>', 'Number of concurrent connections', '10')
   .option('-t, --timeout <ms>', 'Request timeout in milliseconds', '30000')
   .option('-m, --methods <methods>', 'Comma-separated list of RPC methods to test (default: all)', '')
-  .option('--max-retries <number>', 'Maximum number of retries for failed requests', '3')
-  .option('--retry-delay <ms>', 'Delay between retries in milliseconds', '1000')
   .option('--health-check-interval <ms>', 'Health check interval in milliseconds', '5000')
   .option('--health-monitoring', 'Enable health monitoring', true)
   .option('--dry-run', 'Show what would be tested without running', false)
@@ -57,8 +55,6 @@ async function main() {
       concurrent: parseInt(options.concurrent),
       timeout: parseInt(options.timeout),
       methods: options.methods ? options.methods.split(',').map((m: string) => m.trim()) : [],
-      maxRetries: parseInt(options.maxRetries),
-      retryDelay: parseInt(options.retryDelay),
       healthCheckInterval: parseInt(options.healthCheckInterval),
       progress: options.progress,
       gracefulShutdown: true
@@ -87,8 +83,6 @@ async function main() {
     logger.info(`Target RPS:   ${chalk.cyan(config.rps)}`);
     logger.info(`Concurrent:   ${chalk.cyan(config.concurrent)}`);
     logger.info(`Timeout:      ${chalk.cyan(config.timeout)}ms`);
-    logger.info(`Max Retries:  ${chalk.cyan(config.maxRetries)}`);
-    logger.info(`Retry Delay:  ${chalk.cyan(config.retryDelay)}ms`);
     logger.info(`Health Check: ${chalk.cyan(config.healthCheckInterval)}ms`);
     logger.info(`Methods:      ${chalk.cyan(config.methods.length > 0 ? config.methods.join(', ') : 'All methods')}`);
 
