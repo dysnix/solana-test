@@ -20,6 +20,10 @@ export class ConfigValidator {
       throw new Error('Invalid endpoint URL format');
     }
 
+    if (validatedConfig.websocketEndpoint !== undefined && validatedConfig.websocketEndpoint !== '' && !this.isValidWebSocketUrl(validatedConfig.websocketEndpoint)) {
+      throw new Error('Invalid websocket endpoint URL format (use ws:// or wss://)');
+    }
+
     // Validate numeric fields
     if (!validatedConfig.duration || validatedConfig.duration <= 0) {
       throw new Error('Duration must be greater than 0');
@@ -66,13 +70,20 @@ export class ConfigValidator {
     return validatedConfig as LoadTestConfig;
   }
 
+  private static readonly HTTP_PROTOCOLS = ['http:', 'https:'];
+
   private static isValidUrl(url: string): boolean {
     try {
-      new URL(url);
-      return true;
+      const parsed = new URL(url);
+      return this.HTTP_PROTOCOLS.includes(parsed.protocol);
     } catch {
       return false;
     }
+  }
+
+  private static isValidWebSocketUrl(url: string): boolean {
+    const validated = /^wss?:\/\/.+/i.test(url.trim());
+    return validated;
   }
 
   static getRecommendedConfig(endpoint: string): Partial<LoadTestConfig> {

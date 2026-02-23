@@ -5,7 +5,7 @@ import { SolanaRpcLoadTester } from './load-tester';
 import { ResultsReporter } from './reporter';
 import { ConfigValidator } from './config-validator';
 import { Logger, LogLevel } from './logger';
-import { LoadTestConfig, LoadTestOptions } from './types';
+import { LoadTestConfig } from './types';
 import chalk from 'chalk';
 
 const program = new Command();
@@ -17,6 +17,7 @@ program
 
 program
   .option('-e, --endpoint <url>', 'Solana RPC endpoint URL', 'https://api.mainnet-beta.solana.com')
+  .option('-w, --websocket <url>', 'Optional WebSocket endpoint (e.g. wss://...) for real block/slot, account pubkeys and tx signatures; omit to use mock data')
   .option('-d, --duration <seconds>', 'Test duration in seconds', '60')
   .option('-r, --rps <number>', 'Target requests per second', '100')
   .option('-c, --concurrent <number>', 'Number of concurrent connections', '10')
@@ -50,6 +51,7 @@ async function main() {
     // Parse and validate options
     const config: Partial<LoadTestConfig> = {
       endpoint: options.endpoint,
+      websocketEndpoint: options.websocket || undefined,
       duration: parseInt(options.duration),
       rps: parseInt(options.rps),
       concurrent: parseInt(options.concurrent),
@@ -80,6 +82,7 @@ async function main() {
     // Show configuration
     logger.section('Configuration');
     logger.info(`Endpoint:     ${chalk.cyan(config.endpoint)}`);
+    logger.info(`WebSocket:    ${chalk.cyan(config.websocketEndpoint ?? 'none (mock data)')}`);
     logger.info(`Duration:     ${chalk.cyan(config.duration)}s`);
     logger.info(`Target RPS:   ${chalk.cyan(config.rps)}`);
     logger.info(`Concurrent:   ${chalk.cyan(config.concurrent)}`);
@@ -175,7 +178,7 @@ process.on('SIGTERM', async () => {
 });
 
 // Handle unhandled promise rejections
-process.on('unhandledRejection', (reason, promise) => {
+process.on('unhandledRejection', (reason, _promise) => {
   const logger = Logger.getInstance();
   logger.error('Unhandled promise rejection', { reason: String(reason) });
   process.exit(1);

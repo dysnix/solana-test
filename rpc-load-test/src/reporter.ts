@@ -1,4 +1,5 @@
 import chalk from 'chalk';
+import fs from 'fs';
 import { LoadTestResults, WorkerStats } from './types';
 import { Logger } from './logger';
 
@@ -192,7 +193,6 @@ export class ResultsReporter {
     const jsonString = JSON.stringify(exportData, null, 2);
     
     if (filename) {
-      const fs = require('fs');
       fs.writeFileSync(filename, jsonString);
       this.logger.info(`Results exported to ${filename}`);
     }
@@ -223,7 +223,6 @@ export class ResultsReporter {
     }
     
     if (filename) {
-      const fs = require('fs');
       fs.writeFileSync(filename, csv);
       this.logger.info(`Results exported to ${filename}`);
     }

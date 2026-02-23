@@ -66,6 +66,7 @@ export class SolanaRpcLoadTester {
     this.logger.section('Load Test Configuration');
     this.logger.info(`🚀 Starting load test for ${this.config.duration}s at ${this.config.rps} RPS`);
     this.logger.info(`📡 Endpoint: ${this.config.endpoint}`);
+    this.logger.info(`🔌 WebSocket: ${this.config.websocketEndpoint ?? 'none (mock data)'}`);
     this.logger.info(`🔀 Concurrent connections: ${this.config.concurrent}`);
     this.logger.info(`⏱️  Timeout: ${this.config.timeout}ms`);
     this.logger.info(`🔄 Max retries: ${this.config.maxRetries}`);
@@ -133,6 +134,8 @@ export class SolanaRpcLoadTester {
       clearInterval(this.progressInterval);
       this.progressInterval = null;
     }
+
+    await this.rpcMethodGenerator.cleanup();
     
     this.isRunning = false;
     this.isShuttingDown = false;
@@ -313,7 +316,7 @@ export class SolanaRpcLoadTester {
           success: false,
           latency,
           timestamp: startTime,
-          error: `RPC Error ${response.data.error.code}: ${response.data.error.message}`,
+          error: `RPC Error ${response.data.error.code}: ${response.data.error.data?.toString()}`,
           responseSize: JSON.stringify(response.data).length,
           requestDetails: {
             id: request.id,

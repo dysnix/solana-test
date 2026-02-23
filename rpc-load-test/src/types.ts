@@ -33,6 +33,8 @@ export interface TestResult {
 
 export interface LoadTestConfig {
   endpoint: string;
+  /** Optional WebSocket endpoint (e.g. wss://...) for real slot/account/signature data; when omitted, mock data is used */
+  websocketEndpoint?: string;
   duration: number; // seconds
   rps: number; // requests per second
   concurrent: number;
