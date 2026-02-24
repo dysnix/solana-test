@@ -23,6 +23,7 @@ program
   .option('-c, --concurrent <number>', 'Number of concurrent connections', '10')
   .option('-t, --timeout <ms>', 'Request timeout in milliseconds', '30000')
   .option('-m, --methods <methods>', 'Comma-separated list of RPC methods to test (default: all)', '')
+  .option('--method-exclude <methods>', 'Comma-separated list of RPC methods to exclude from testing', '')
   .option('--health-check-interval <ms>', 'Health check interval in milliseconds', '5000')
   .option('--health-monitoring', 'Enable health monitoring', true)
   .option('--dry-run', 'Show what would be tested without running', false)
@@ -46,6 +47,9 @@ async function main() {
 
     logger.section('SOLANA RPC LOAD TEST');
     
+    const includedMethods = options.methods ? options.methods.split(',').map((m: string) => m.trim()).filter((m: string) => m.length > 0) : [];
+    const excludedMethods = options.methodExclude ? options.methodExclude.split(',').map((m: string) => m.trim()).filter((m: string) => m.length > 0) : [];
+
     // Parse and validate options
     const config: Partial<LoadTestConfig> = {
       endpoint: options.endpoint,
@@ -54,7 +58,7 @@ async function main() {
       rps: parseInt(options.rps),
       concurrent: parseInt(options.concurrent),
       timeout: parseInt(options.timeout),
-      methods: options.methods ? options.methods.split(',').map((m: string) => m.trim()) : [],
+      methods: includedMethods,
       healthCheckInterval: parseInt(options.healthCheckInterval),
       progress: options.progress,
       gracefulShutdown: true
@@ -62,14 +66,30 @@ async function main() {
 
     logger.debug('Methods parsing', { 
       rawMethods: options.methods, 
+      rawExcludedMethods: options.methodExclude,
       parsedMethods: config.methods,
+      parsedExcludedMethods: excludedMethods,
       methodsLength: config.methods?.length 
     });
 
     // Validate methods
     try {
-      config.methods = ConfigValidator.validateMethods(config.methods || []);
-      logger.debug('Methods after validation', { methods: config.methods, originalMethods: options.methods });
+      const validIncludedMethods = ConfigValidator.validateMethods(config.methods || []);
+      const validExcludedMethods = ConfigValidator.validateMethods(excludedMethods);
+      const allSupportedMethods = ConfigValidator.getValidMethods();
+
+      const baseMethods = validIncludedMethods.length > 0 ? validIncludedMethods : allSupportedMethods;
+      config.methods = baseMethods.filter(method => !validExcludedMethods.includes(method));
+
+      if (config.methods.length === 0) {
+        throw new Error('Method selection is empty after applying exclusions. Remove some methods from --method-exclude.');
+      }
+
+      logger.debug('Methods after validation', {
+        methods: config.methods,
+        originalMethods: options.methods,
+        excludedMethods: validExcludedMethods,
+      });
     } catch (error) {
       logger.error('Method validation failed', { error: error instanceof Error ? error.message : String(error) });
       process.exit(1);

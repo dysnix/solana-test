@@ -71,6 +71,16 @@ export class ConfigValidator {
   }
 
   private static readonly HTTP_PROTOCOLS = ['http:', 'https:'];
+  private static readonly VALID_METHODS = [
+    'getSlot',
+    'getBalance',
+    'getTransaction',
+    'getSignaturesForAddress',
+    'getMultipleAccounts',
+    'getProgramAccounts',
+    'getBlock',
+    'getLatestBlockhash'
+  ];
 
   private static isValidUrl(url: string): boolean {
     try {
@@ -101,24 +111,19 @@ export class ConfigValidator {
   }
 
   static validateMethods(methods: string[]): string[] {
-    const validMethods = [
-      'getSlot',
-      'getTransaction',
-      'getMultipleAccounts',
-      'getProgramAccounts',
-      'getBlock',
-      'getLatestBlockhash'
-    ];
-
     if (methods.length === 0) {
       return []; // Return empty array when no methods specified
     }
 
-    const invalidMethods = methods.filter(method => !validMethods.includes(method));
+    const invalidMethods = methods.filter(method => !this.VALID_METHODS.includes(method));
     if (invalidMethods.length > 0) {
-      throw new Error(`Invalid RPC methods: ${invalidMethods.join(', ')}. Valid methods: ${validMethods.join(', ')}`);
+      throw new Error(`Invalid RPC methods: ${invalidMethods.join(', ')}. Valid methods: ${this.VALID_METHODS.join(', ')}`);
     }
 
     return methods;
+  }
+
+  static getValidMethods(): string[] {
+    return [...this.VALID_METHODS];
   }
 }

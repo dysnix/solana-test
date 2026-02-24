@@ -85,7 +85,9 @@ export interface HealthCheckResult {
 
 export enum RpcMethod {
   GET_SLOT = 'getSlot',
+  GET_BALANCE = 'getBalance',
   GET_TRANSACTION = 'getTransaction',
+  GET_SIGNATURES_FOR_ADDRESS = 'getSignaturesForAddress',
   GET_MULTIPLE_ACCOUNTS = 'getMultipleAccounts',
   GET_PROGRAM_ACCOUNTS = 'getProgramAccounts',
   GET_BLOCK = 'getBlock',

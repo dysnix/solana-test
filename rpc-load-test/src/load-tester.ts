@@ -269,8 +269,12 @@ export class SolanaRpcLoadTester {
     switch (methodName) {
       case 'getSlot':
         return this.rpcMethodGenerator.getSlot();
+      case 'getBalance':
+        return this.rpcMethodGenerator.getBalance();
       case 'getTransaction':
         return this.rpcMethodGenerator.getTransaction();
+      case 'getSignaturesForAddress':
+        return this.rpcMethodGenerator.getSignaturesForAddress();
       case 'getMultipleAccounts':
         return this.rpcMethodGenerator.getMultipleAccounts();
       case 'getProgramAccounts':

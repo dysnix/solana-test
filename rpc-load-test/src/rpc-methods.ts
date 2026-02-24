@@ -291,6 +291,20 @@ export class RpcMethodGenerator {
     };
   }
 
+  getBalance(): RpcRequest {
+    return {
+      jsonrpc: '2.0',
+      id: Math.floor(Math.random() * 1000000),
+      method: RpcMethod.GET_BALANCE,
+      params: [
+        this.generateRandomPublicKey(),
+        {
+          commitment: Commitment.CONFIRMED
+        }
+      ]
+    };
+  }
+
   getTransaction(): RpcRequest {
     return {
       jsonrpc: '2.0',
@@ -302,6 +316,21 @@ export class RpcMethodGenerator {
           encoding: Encoding.BASE64,
           commitment: Commitment.CONFIRMED,
           maxSupportedTransactionVersion: 0
+        }
+      ]
+    };
+  }
+
+  getSignaturesForAddress(): RpcRequest {
+    return {
+      jsonrpc: '2.0',
+      id: Math.floor(Math.random() * 1000000),
+      method: RpcMethod.GET_SIGNATURES_FOR_ADDRESS,
+      params: [
+        this.generateRandomPublicKey(),
+        {
+          commitment: Commitment.CONFIRMED,
+          limit: 10,
         }
       ]
     };
@@ -371,7 +400,9 @@ export class RpcMethodGenerator {
   async generateRandomMethod(): Promise<RpcRequest> {
     const methods = [
       () => this.getSlot(),
+      () => this.getBalance(),
       () => this.getTransaction(),
+      () => this.getSignaturesForAddress(),
       () => this.getMultipleAccounts(),
       () => this.getProgramAccounts(),
       () => this.getBlock(),
