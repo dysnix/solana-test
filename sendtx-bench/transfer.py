@@ -16,8 +16,6 @@ import time
 import os
 import json
 import dotenv
-import websockets
-import asyncio
 import argparse
 import sys
 
@@ -25,37 +23,10 @@ import sys
 dotenv.load_dotenv()
 
 API_KEY = os.getenv("API_KEY")
-RPC_URL = os.getenv("RPC_URL", f"https://solana-rpc.rpcfast.net/trader/?api_key={API_KEY}&tx_submit_mode=balanced&tip_amount=1000000")
-WS_URL = os.getenv("WS_URL", f"wss://solana-rpc.rpcfast.net/ws/trader?api_key={API_KEY}")
+RPC_URL = os.getenv("RPC_URL", f"https://solana-rpc.rpcfast.com/?api_key=${API_KEY}")
+SEND_TX_RPC_URL = os.getenv("SEND_TX_RPC_URL", f"https://solana-rpc.rpcfast.com/?api_key=${API_KEY}")
 USDT_MINT = Pubkey.from_string("Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB")
 RECEIVER_PUBKEY = os.getenv("RECEIVER_PUBLIC_KEY")
-
-
-async def get_priority_fee():
-    async with websockets.connect(WS_URL) as websocket:
-        # Subscribe to priority fee stream
-        subscribe_msg = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "subscribe",
-            "params": [
-                "GetPriorityFeeStream",
-                {
-                    "project": "P_JUPITER",
-                    "percentile": 90,
-                },
-            ],
-        }
-        await websocket.send(json.dumps(subscribe_msg))
-
-        # Wait for the first valid response
-        while True:
-            msg = await websocket.recv()
-            msg = json.loads(msg)
-            if "params" in msg and "result" in msg["params"]:
-                return int(
-                    msg["params"]["result"].get("feeAtPercentile", 100000)
-                )  # Default to 100000 if not found
 
 
 def parse_args():
@@ -69,7 +40,7 @@ def parse_args():
 def run_transfer(priority_fee):
     # Setup
     client = Client(RPC_URL, commitment=Confirmed)
-    send_tx_client = Client(RPC_URL, commitment=Confirmed)
+    send_tx_client = Client(SEND_TX_RPC_URL, commitment=Confirmed)
 
     # Load keypair and define addresses
     with open("sender_pk.json", "rb") as f:
@@ -102,7 +73,7 @@ def run_transfer(priority_fee):
         else:
             print("Receiver's token account exists")
     except Exception as e:
-        print(f"Error checking receiver's account: {e}")
+        print(f"Error checking receiver's account: {str(e)}")
         sys.exit(1)
 
     # Check sender's token balance
@@ -164,29 +135,52 @@ def run_transfer(priority_fee):
     print("\nSending transaction...")
     sent = send_tx_client.send_transaction(
         tx,
-        opts=TxOpts(preflight_commitment=Confirmed, max_retries=2, skip_preflight=True),
+        opts=TxOpts(preflight_commitment=Confirmed, max_retries=0, skip_preflight=True),
     )
     signature = sent.value
     print("Transaction Signature:", signature)
 
-    # Wait for confirmation
+    # Wait for confirmation with a hard timeout to avoid blocking indefinitely
     print("Waiting for confirmation...")
+    confirmation_timeout_seconds = 5
+    poll_interval_seconds = 0.5
+    confirmed_status = None
+    deadline = time.monotonic() + confirmation_timeout_seconds
     try:
-        confirm_status = client.confirm_transaction(signature, commitment=Confirmed)
-        if len(confirm_status.value) > 0:
-            print(f"Transaction confirmed! {str(confirm_status.value[0])}")
-        elif confirm_status.value[0].err is not None:
-            print(f"Transaction failed: {confirm_status.value[0].err}")
-            return None
-        else:
-            print("Failed to wait for confirmation")
+        while time.monotonic() < deadline:
+            status_response = client.get_signature_statuses(
+                [signature], search_transaction_history=True
+            )
+            if len(status_response.value) == 0 or status_response.value[0] is None:
+                time.sleep(poll_interval_seconds)
+                continue
+
+            status = status_response.value[0]
+            if status.err is not None:
+                print(f"Transaction failed: {status.err}")
+                return None
+
+            confirmation_state = str(status.confirmation_status).lower()
+            if confirmation_state in ("transactionconfirmationstatus.confirmed", "confirmed"):
+                confirmed_status = status
+                print(f"Transaction confirmed! {status}")
+                break
+            if confirmation_state in ("transactionconfirmationstatus.finalized", "finalized"):
+                confirmed_status = status
+                print(f"Transaction finalized! {status}")
+                break
+
+            time.sleep(poll_interval_seconds)
+
+        if confirmed_status is None:
+            print(f"Timed out waiting for confirmation ({confirmation_timeout_seconds}s)")
             return None
     except Exception as e:
         print(f"Error confirming transaction: {e}")
         return None
 
     # Get post-confirmation block info
-    confirmed_slot = confirm_status.value[0].slot
+    confirmed_slot = confirmed_status.slot
     confirmed_time = client.get_block_time(confirmed_slot).value
 
     # Calculate differences
