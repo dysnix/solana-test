@@ -369,6 +369,69 @@ export class RpcMethodGenerator {
     };
   }
 
+  getTokenAccountsByOwner(): RpcRequest {
+    return {
+      jsonrpc: '2.0',
+      id: Math.floor(Math.random() * 1000000),
+      method: RpcMethod.GET_TOKEN_ACCOUNTS_BY_OWNER,
+      params: [
+        this.generateRandomPublicKey(),
+        {
+          programId: new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'),
+        },
+        {
+          encoding: Encoding.BASE64,
+          commitment: Commitment.CONFIRMED,
+        }
+      ]
+    };
+  }
+
+  getTokenAccountsByDelegate(): RpcRequest {
+    return {
+      jsonrpc: '2.0',
+      id: Math.floor(Math.random() * 1000000),
+      method: RpcMethod.GET_TOKEN_ACCOUNTS_BY_DELEGATE,
+      params: [
+        this.generateRandomPublicKey(),
+        {
+          encoding: Encoding.BASE64,
+          commitment: Commitment.CONFIRMED,
+        }
+      ]
+    };
+  }
+
+  getTokenAccountBalance(): RpcRequest {
+    return {
+      jsonrpc: '2.0',
+      id: Math.floor(Math.random() * 1000000),
+      method: RpcMethod.GET_TOKEN_ACCOUNT_BALANCE,
+      params: [
+        this.generateRandomPublicKey(),
+        {
+          encoding: Encoding.BASE64,
+          commitment: Commitment.CONFIRMED,
+        }
+      ]
+    };
+  }
+
+  getTokenLargestAccounts(): RpcRequest {
+    return {
+      jsonrpc: '2.0',
+      id: Math.floor(Math.random() * 1000000),
+      method: RpcMethod.GET_TOKEN_LARGEST_ACCOUNTS,
+      params: [
+        this.generateRandomPublicKey(),
+        {
+          encoding: Encoding.BASE64,
+          commitment: Commitment.CONFIRMED,
+        }
+      ]
+    }
+  }
+
   getBlock(): RpcRequest {
     return {
       jsonrpc: '2.0',

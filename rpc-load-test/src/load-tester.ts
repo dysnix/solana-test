@@ -283,6 +283,14 @@ export class SolanaRpcLoadTester {
         return this.rpcMethodGenerator.getBlock();
       case 'getLatestBlockhash':
         return this.rpcMethodGenerator.getLatestBlockhash();
+      case 'getTokenAccountsByOwner':
+        return this.rpcMethodGenerator.getTokenAccountsByOwner();
+      case 'getTokenAccountBalance':
+        return this.rpcMethodGenerator.getTokenAccountBalance();
+      case 'getTokenLargestAccounts':
+        return this.rpcMethodGenerator.getTokenLargestAccounts();
+      case 'getTokenAccountsByDelegate':
+        return this.rpcMethodGenerator.getTokenAccountsByDelegate();
       default:
         throw new Error(`Invalid method specified: ${methodName}. Valid methods: ${this.config.methods.join(', ')}`);
     }

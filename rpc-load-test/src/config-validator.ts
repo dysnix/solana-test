@@ -79,7 +79,11 @@ export class ConfigValidator {
     'getMultipleAccounts',
     'getProgramAccounts',
     'getBlock',
-    'getLatestBlockhash'
+    'getLatestBlockhash',
+    'getTokenAccountsByOwner',
+    'getTokenAccountBalance',
+    'getTokenLargestAccounts',
+    'getTokenAccountsByDelegate',
   ];
 
   private static isValidUrl(url: string): boolean {

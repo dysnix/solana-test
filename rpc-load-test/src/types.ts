@@ -91,7 +91,11 @@ export enum RpcMethod {
   GET_MULTIPLE_ACCOUNTS = 'getMultipleAccounts',
   GET_PROGRAM_ACCOUNTS = 'getProgramAccounts',
   GET_BLOCK = 'getBlock',
-  GET_LATEST_BLOCKHASH = 'getLatestBlockhash'
+  GET_LATEST_BLOCKHASH = 'getLatestBlockhash',
+  GET_TOKEN_ACCOUNTS_BY_OWNER = 'getTokenAccountsByOwner',
+  GET_TOKEN_ACCOUNT_BALANCE = 'getTokenAccountBalance',
+  GET_TOKEN_LARGEST_ACCOUNTS = 'getTokenLargestAccounts',
+  GET_TOKEN_ACCOUNTS_BY_DELEGATE = 'getTokenAccountsByDelegate',
 }
 
 export enum Commitment {
