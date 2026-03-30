@@ -1,3 +1,6 @@
 target
 .env
 *.json
+*.toml
+*.md
+!README.md

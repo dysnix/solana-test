@@ -1,38 +1,78 @@
 # sendtx-bench-rs
 
-Rust rewrite of the transfer benchmark from `sendtx-bench/transfer.py`, optimized to keep
-`sendTransaction` HTTP connections persistent with a single reusable `reqwest` client.
+RPC sendTransaction benchmark with sequential provider testing and comparison reporting.
 
-## Behavior
+## Configuration
 
-- Uses `RPC_URL` for read RPCs (balance, blockhash, status).
-- Uses `SEND_TX_RPC_URL` for `sendTransaction`.
-- Sends USDT transfer (`amount=10_000`, `decimals=6`) with priority fee and optional tip.
-- Checks sender USDT and SOL balances before send.
-- Uses a simple fast confirmation loop (`confirmed` only, short fixed timeout/polling).
-- Writes benchmark output to JSON with the same schema as Python.
+Uses TOML config (default: `config.toml`):
 
-## Environment
+```toml
+[[receiver]]
+pubkey = "..."
+private_key = "receiver_pk.json"
 
-Copy values from `sendtx-bench/.env` or set manually:
+[[sender]]
+pubkey = "..."
+private_key = "sender_pk.json"
 
-- `API_KEY` (optional if full URLs already provided)
-- `RPC_URL` (supports `${API_KEY}` placeholder)
-- `SEND_TX_RPC_URL` (supports `${API_KEY}` placeholder)
-- `RECEIVER_PUBLIC_KEY` (required)
-- `TIP_ACCOUNT` (optional)
-- `TIP_AMOUNT` (optional, lamports, default `1000000`)
+[[global]]
+tip_amount = 1000000
+priority_fee_lamports = 1000000
+rpc_url = "https://..."
 
-`sender_pk.json` must exist in the current working directory.
+[[provider]]
+name = "rpcfast-astralane"
+# Optional per-provider overrides:
+# rpc_url = "https://..."
+# tip_amount = 1500000
+# priority_fee_lamports = 1200000
+send_tx_rpc_url = "https://..."
+tip_accounts = ["...", "..."]
+```
+
+Notes:
+- `global.priority_fee_lamports` is used as compute unit limit.
+- `global.tip_amount` and `global.rpc_url` apply to all providers.
+- Any provider can override those global values via optional `rpc_url`, `tip_amount`,
+  and `priority_fee_lamports`.
+- Compute unit price is fixed to `1` micro-lamport/CU.
+- Tip account is randomly rotated per transaction from `tip_accounts`.
+- No dotenv/env fallback is used.
 
 ## Run
 
+Single provider (default first provider if `--providers` omitted):
+
 ```bash
-cargo run --release -- --runs 5
+cargo run --release -- --runs 5 --providers rpcfast-astralane
 ```
 
-Custom output file:
+Subset of providers:
 
 ```bash
-cargo run --release -- --runs 5 --output my_results.json
+cargo run --release -- --runs 5 --providers rpcfast-astralane,rpcfast-nozomi
+```
+
+All providers:
+
+```bash
+cargo run --release -- --runs 5 --providers all
+```
+
+## Outputs
+
+- Single provider run writes JSON output (default: `transfer_results_<timestamp>.json`).
+- Multi-provider run (`all` or 2+ selected providers) writes:
+  - markdown comparison table (default: `provider_comparison_<timestamp>.md`)
+  - JSON comparison payload with all provider runs/metrics (default: same filename
+    with `.json` extension, e.g. `provider_comparison_<timestamp>.json`)
+
+Custom output paths:
+
+```bash
+# Single-provider JSON
+cargo run --release -- --runs 5 --providers rpcfast-astralane --output result.json
+
+# Multi-provider markdown
+cargo run --release -- --runs 5 --providers all --markdown-output compare.md
 ```
