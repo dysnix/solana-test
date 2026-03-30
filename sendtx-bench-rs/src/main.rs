@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
@@ -69,6 +70,8 @@ struct ProviderConfig {
     name: String,
     rpc_url: Option<String>,
     send_tx_rpc_url: String,
+    sender_pubkey: Option<String>,
+    sender_private_key: Option<String>,
     #[serde(default)]
     tip_accounts: Vec<String>,
     tip_amount: Option<u64>,
@@ -95,8 +98,7 @@ struct RuntimeConfig {
 }
 
 struct LoadedConfig {
-    sender_pubkey: Pubkey,
-    sender_private_key_path: String,
+    default_sender_pubkey: Pubkey,
     receiver_pubkey: Pubkey,
     providers: Vec<ProviderRuntime>,
 }
@@ -106,6 +108,8 @@ struct ProviderRuntime {
     name: String,
     rpc_url: String,
     send_tx_rpc_url: String,
+    sender_pubkey: Pubkey,
+    sender_private_key_path: String,
     tip_accounts: Vec<Pubkey>,
     tip_amount: u64,
     priority_fee_lamports: u32,
@@ -160,6 +164,7 @@ struct Percentiles {
 
 struct ProviderBenchmark {
     provider_name: String,
+    sender_pubkey: Pubkey,
     results: Vec<RunResult>,
     averages: Averages,
     percentiles: Percentiles,
@@ -178,6 +183,7 @@ struct MultiProviderOutputData<'a> {
 #[derive(Debug, Serialize)]
 struct ProviderComparisonOutput<'a> {
     provider_name: &'a str,
+    sender_pubkey: String,
     success_landing_ratio_pct: f64,
     performance_rate_pct: f64,
     averages: &'a Averages,
@@ -295,31 +301,53 @@ fn main() -> Result<()> {
         .collect::<Vec<_>>();
 
     println!("Selected providers: {}", selected_names.join(", "));
-    println!("Selected sender: {}", loaded.sender_pubkey);
+    println!("Default sender: {}", loaded.default_sender_pubkey);
     println!("Selected receiver: {}", loaded.receiver_pubkey);
 
-    let mut benchmarks = Vec::new();
-    for provider in selected_providers {
-        println!("\n=== Provider: {} ===", provider.name);
-        println!(
-            "Configured compute unit limit: {}",
-            provider.priority_fee_lamports
-        );
-        println!("Configured tip accounts: {}", provider.tip_accounts.len());
+    let mut indexed_benchmarks = Vec::new();
+    thread::scope(|scope| -> Result<()> {
+        let mut handles = Vec::new();
+        for (idx, provider) in selected_providers.into_iter().enumerate() {
+            let runtime = RuntimeConfig {
+                provider_name: provider.name.clone(),
+                rpc_url: provider.rpc_url.clone(),
+                send_tx_rpc_url: provider.send_tx_rpc_url.clone(),
+                sender_pubkey: provider.sender_pubkey,
+                sender_private_key_path: provider.sender_private_key_path.clone(),
+                tip_accounts: provider.tip_accounts.clone(),
+                tip_amount: provider.tip_amount,
+                priority_fee_lamports: provider.priority_fee_lamports,
+            };
+            let runs = args.runs;
+            handles.push(scope.spawn(move || -> Result<(usize, ProviderBenchmark)> {
+                println!("\n=== Provider: {} ===", runtime.provider_name);
+                println!("Sender: {}", runtime.sender_pubkey);
+                println!(
+                    "Configured compute unit limit: {}",
+                    runtime.priority_fee_lamports
+                );
+                println!("Configured tip accounts: {}", runtime.tip_accounts.len());
 
-        let runtime = RuntimeConfig {
-            provider_name: provider.name.clone(),
-            rpc_url: provider.rpc_url.clone(),
-            send_tx_rpc_url: provider.send_tx_rpc_url.clone(),
-            sender_pubkey: loaded.sender_pubkey,
-            sender_private_key_path: loaded.sender_private_key_path.clone(),
-            tip_accounts: provider.tip_accounts.clone(),
-            tip_amount: provider.tip_amount,
-            priority_fee_lamports: provider.priority_fee_lamports,
-        };
-        let benchmark = run_provider_benchmark(&runtime, args.runs)?;
-        benchmarks.push(benchmark);
-    }
+                let benchmark = run_provider_benchmark(&runtime, runs)?;
+                Ok((idx, benchmark))
+            }));
+        }
+
+        for handle in handles {
+            let worker_output = handle
+                .join()
+                .map_err(|panic_payload| anyhow!(panic_payload_to_string(panic_payload)))?;
+            let indexed = worker_output?;
+            indexed_benchmarks.push(indexed);
+        }
+        Ok(())
+    })?;
+
+    indexed_benchmarks.sort_by_key(|(idx, _)| *idx);
+    let benchmarks = indexed_benchmarks
+        .into_iter()
+        .map(|(_, benchmark)| benchmark)
+        .collect::<Vec<_>>();
 
     if benchmarks.len() == 1 {
         if args.markdown_output.is_some() {
@@ -331,7 +359,7 @@ fn main() -> Result<()> {
             .ok_or_else(|| anyhow!("missing benchmark result"))?;
         let output_data = OutputData {
             provider_name: benchmark.provider_name,
-            sender_pubkey: loaded.sender_pubkey.to_string(),
+            sender_pubkey: benchmark.sender_pubkey.to_string(),
             receiver_pubkey: loaded.receiver_pubkey.to_string(),
             results: benchmark.results,
             averages: benchmark.averages,
@@ -353,7 +381,7 @@ fn main() -> Result<()> {
     let markdown = render_markdown_report(
         &benchmarks,
         &performance,
-        loaded.sender_pubkey,
+        loaded.default_sender_pubkey,
         loaded.receiver_pubkey,
         args.runs,
         &selected_names,
@@ -423,6 +451,22 @@ impl LoadedConfig {
 
         let mut providers = Vec::with_capacity(config_file.provider.len());
         for provider in &config_file.provider {
+            let provider_sender_pubkey = match &provider.sender_pubkey {
+                Some(value) => Pubkey::from_str(value).with_context(|| {
+                    format!("invalid sender_pubkey at provider '{}'", provider.name)
+                })?,
+                None => sender_pubkey,
+            };
+            let provider_sender_private_key = match &provider.sender_private_key {
+                Some(value) => value.clone(),
+                None => selected_sender.private_key.clone(),
+            };
+            if provider.sender_pubkey.is_some() != provider.sender_private_key.is_some() {
+                return Err(anyhow!(
+                    "provider '{}' must set both sender_pubkey and sender_private_key together",
+                    provider.name
+                ));
+            }
             let mut tip_accounts = Vec::with_capacity(provider.tip_accounts.len());
             for (idx, tip_account) in provider.tip_accounts.iter().enumerate() {
                 let parsed = Pubkey::from_str(tip_account).with_context(|| {
@@ -440,6 +484,8 @@ impl LoadedConfig {
                     .clone()
                     .unwrap_or_else(|| global.rpc_url.clone()),
                 send_tx_rpc_url: provider.send_tx_rpc_url.clone(),
+                sender_pubkey: provider_sender_pubkey,
+                sender_private_key_path: provider_sender_private_key,
                 tip_accounts,
                 tip_amount: provider.tip_amount.unwrap_or(global.tip_amount),
                 priority_fee_lamports: provider
@@ -449,8 +495,7 @@ impl LoadedConfig {
         }
 
         Ok(Self {
-            sender_pubkey,
-            sender_private_key_path: selected_sender.private_key.clone(),
+            default_sender_pubkey: sender_pubkey,
             receiver_pubkey,
             providers,
         })
@@ -463,7 +508,7 @@ fn run_provider_benchmark(config: &RuntimeConfig, runs: usize) -> Result<Provide
 
     for i in 0..runs {
         println!("\nRun {}/{} [{}]", i + 1, runs, config.provider_name);
-        let result = run_transfer(config, &mut send_tx_sender)?;
+        let result = run_transfer(config, &mut send_tx_sender, i)?;
         println!("{}", serde_json::to_string(&result)?);
         results.push(result);
 
@@ -476,6 +521,7 @@ fn run_provider_benchmark(config: &RuntimeConfig, runs: usize) -> Result<Provide
     let percentiles = compute_percentiles(&results);
     Ok(ProviderBenchmark {
         provider_name: config.provider_name.clone(),
+        sender_pubkey: config.sender_pubkey,
         results,
         averages,
         percentiles,
@@ -485,6 +531,7 @@ fn run_provider_benchmark(config: &RuntimeConfig, runs: usize) -> Result<Provide
 fn run_transfer(
     config: &RuntimeConfig,
     send_tx_sender: &mut PersistentRpcSender,
+    run_idx: usize,
 ) -> Result<RunResult> {
     let client =
         RpcClient::new_with_commitment(config.rpc_url.clone(), CommitmentConfig::confirmed());
@@ -541,6 +588,9 @@ fn run_transfer(
             config.tip_amount,
         ));
     }
+    let memo = build_memo_text(config, run_idx);
+    ixs.push(build_memo_instruction(&memo)?);
+    println!("Memo: {}", memo);
 
     let recent_blockhash = client
         .get_latest_blockhash()
@@ -646,6 +696,26 @@ fn read_sender_keypair(path: &str, expected_pubkey: Pubkey) -> Result<Keypair> {
         ));
     }
     Ok(keypair)
+}
+
+fn build_memo_text(config: &RuntimeConfig, run_idx: usize) -> String {
+    let random_suffix = rand::random::<u64>();
+    format!(
+        "bench:{}:run-{}:{}",
+        config.provider_name,
+        run_idx + 1,
+        random_suffix
+    )
+}
+
+fn build_memo_instruction(memo: &str) -> Result<solana_sdk::instruction::Instruction> {
+    let memo_program = Pubkey::from_str("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr")
+        .context("invalid memo program id")?;
+    Ok(solana_sdk::instruction::Instruction {
+        program_id: memo_program,
+        accounts: Vec::new(),
+        data: memo.as_bytes().to_vec(),
+    })
 }
 
 fn resolve_selected_providers(
@@ -835,6 +905,7 @@ fn build_multi_provider_output_data<'a>(
             });
         providers.push(ProviderComparisonOutput {
             provider_name: &benchmark.provider_name,
+            sender_pubkey: benchmark.sender_pubkey.to_string(),
             success_landing_ratio_pct: provider_performance.success_landing_ratio_pct,
             performance_rate_pct: provider_performance.performance_rate_pct,
             averages: &benchmark.averages,
@@ -845,7 +916,7 @@ fn build_multi_provider_output_data<'a>(
 
     MultiProviderOutputData {
         generated_at: chrono::Local::now().to_rfc3339(),
-        sender_pubkey: loaded.sender_pubkey.to_string(),
+        sender_pubkey: format_sender_summary(benchmarks, loaded.default_sender_pubkey),
         receiver_pubkey: loaded.receiver_pubkey.to_string(),
         runs_per_provider: runs,
         selected_providers: selected_providers.to_vec(),
@@ -946,7 +1017,7 @@ fn compute_provider_performance(
 fn render_markdown_report(
     benchmarks: &[ProviderBenchmark],
     performance: &HashMap<String, ProviderPerformance>,
-    sender_pubkey: Pubkey,
+    default_sender: Pubkey,
     receiver_pubkey: Pubkey,
     runs: usize,
     selected_providers: &[String],
@@ -957,16 +1028,19 @@ fn render_markdown_report(
         "- Generated: `{}`\n",
         chrono::Local::now().to_rfc3339()
     ));
-    out.push_str(&format!("- Sender: `{}`\n", sender_pubkey));
+    out.push_str(&format!(
+        "- Sender(s): `{}`\n",
+        format_sender_summary(benchmarks, default_sender)
+    ));
     out.push_str(&format!("- Receiver: `{}`\n", receiver_pubkey));
     out.push_str(&format!("- Runs per provider: `{}`\n", runs));
     out.push_str(&format!(
         "- Selected providers: `{}`\n\n",
         selected_providers.join(", ")
     ));
-    out.push_str("| Provider | Avg Ack ms | P90 Ack ms | Avg FirstSeen ms | P90 FirstSeen ms | Avg Landed ms | P90 Landed ms | Avg Landed slots | P90 Landed slots | Avg Priority Fee | Max Slots | Min Slots | Same-slot landed | Landed runs | Total runs | Success ratio % | Performance rate % |\n");
+    out.push_str("| Provider | Sender | Avg Ack ms | P90 Ack ms | Avg FirstSeen ms | P90 FirstSeen ms | Avg Landed ms | P90 Landed ms | Avg Landed slots | P90 Landed slots | Avg Priority Fee | Max Slots | Min Slots | Same-slot landed | Landed runs | Total runs | Success ratio % | Performance rate % |\n");
     out.push_str(
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n",
     );
 
     for benchmark in benchmarks {
@@ -980,8 +1054,9 @@ fn render_markdown_report(
                 performance_rate_pct: 0.0,
             });
         out.push_str(&format!(
-            "| {} | {:.3} | {:.3} | {:.3} | {:.3} | {:.3} | {:.3} | {:.3} | {:.3} | {:.3} | {} | {} | {} | {} | {} | {:.2} | {:.2} |\n",
+            "| {} | `{}` | {:.3} | {:.3} | {:.3} | {:.3} | {:.3} | {:.3} | {:.3} | {:.3} | {:.3} | {} | {} | {} | {} | {} | {:.2} | {:.2} |\n",
             benchmark.provider_name,
+            benchmark.sender_pubkey,
             avg.avg_send_ack_ms,
             p90.p90_send_ack_ms,
             avg.avg_submit_to_first_seen_ms,
@@ -1002,4 +1077,28 @@ fn render_markdown_report(
     }
 
     out
+}
+
+fn format_sender_summary(benchmarks: &[ProviderBenchmark], default_sender: Pubkey) -> String {
+    let mut senders = benchmarks
+        .iter()
+        .map(|benchmark| benchmark.sender_pubkey.to_string())
+        .collect::<Vec<_>>();
+    senders.sort();
+    senders.dedup();
+    match senders.len() {
+        0 => default_sender.to_string(),
+        1 => senders[0].clone(),
+        _ => format!("multiple ({})", senders.join(", ")),
+    }
+}
+
+fn panic_payload_to_string(payload: Box<dyn Any + Send>) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        return format!("provider worker panicked: {}", message);
+    }
+    if let Some(message) = payload.downcast_ref::<String>() {
+        return format!("provider worker panicked: {}", message);
+    }
+    "provider worker panicked".to_string()
 }

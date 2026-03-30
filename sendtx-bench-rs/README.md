@@ -1,6 +1,6 @@
 # sendtx-bench-rs
 
-RPC sendTransaction benchmark with sequential provider testing and comparison reporting.
+RPC sendTransaction benchmark with concurrent provider testing and comparison reporting.
 
 ## Configuration
 
@@ -26,17 +26,23 @@ name = "rpcfast-astralane"
 # rpc_url = "https://..."
 # tip_amount = 1500000
 # priority_fee_lamports = 1200000
+# sender_pubkey = "..."
+# sender_private_key = "provider_sender_pk.json"
 send_tx_rpc_url = "https://..."
 tip_accounts = ["...", "..."]
 ```
 
 Notes:
 - `global.priority_fee_lamports` is used as compute unit limit.
-- `global.tip_amount` and `global.rpc_url` apply to all providers.
+- `global.tip_amount`, `global.rpc_url`, and the first `[[sender]]` apply to all providers.
 - Any provider can override those global values via optional `rpc_url`, `tip_amount`,
   and `priority_fee_lamports`.
+- Any provider can also override sender identity with `sender_pubkey` +
+  `sender_private_key` (set both together). This is recommended for concurrent
+  multi-provider comparisons.
 - Compute unit price is fixed to `1` micro-lamport/CU.
 - Tip account is randomly rotated per transaction from `tip_accounts`.
+- Each transaction includes a unique memo to avoid duplicate tx identity collisions.
 - No dotenv/env fallback is used.
 
 ## Run
