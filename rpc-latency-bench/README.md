@@ -12,5 +12,5 @@ Please make sure following tools are installed on your machine.
 
 ## Run benchmark
 
-1. Please configure adjustable variables inside `rpc_latency_bench.sh` file.
-2. Run benchmark using `bash rpc_latency_bench.sh`.
+1. Obtain API key by registering at https://solana.rpcfast.com
+2. Run benchmark using `API_KEY=<your_rpc_api_key> bash rpc_latency_bench.sh`.
