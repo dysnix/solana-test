@@ -3,8 +3,8 @@
 ########################################################
 ###### adjust these variables for your needs ###########
 ########################################################
-API_KEY="YOUR-API-KEY"
-RPC="https://solana-rpc.rpcfast.net/?api_key=${API_KEY}"
+API_KEY=${API_KEY:?"is missing"}
+RPC="https://solana-rpc.rpcfast.com/?api_key=${API_KEY}"
 
 ########################################################
 ###### do not modify below here ########################
@@ -20,7 +20,7 @@ for i in {1..20}; do RPCS+="$RPC "; OPTS+="-o /dev/null "; done
 curl ${RPCS[@]} ${OPTS[@]} -s -w '%{time_total}\n' -d '
     {
         "jsonrpc":"2.0",
-        "method":"getSlot",
+        "method":"getHealth",
         "id":1
     }' >> $temp
 
