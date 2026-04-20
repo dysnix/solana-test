@@ -69,7 +69,7 @@ struct ActorConfig {
 struct ProviderConfig {
     name: String,
     rpc_url: Option<String>,
-    send_tx_rpc_url: String,
+    send_tx_rpc_url: Option<String>,
     sender_pubkey: Option<String>,
     sender_private_key: Option<String>,
     #[serde(default)]
@@ -83,6 +83,7 @@ struct GlobalConfig {
     tip_amount: u64,
     priority_fee_lamports: u32,
     rpc_url: String,
+    send_tx_rpc_url: String,
 }
 
 #[derive(Clone)]
@@ -483,7 +484,10 @@ impl LoadedConfig {
                     .rpc_url
                     .clone()
                     .unwrap_or_else(|| global.rpc_url.clone()),
-                send_tx_rpc_url: provider.send_tx_rpc_url.clone(),
+                send_tx_rpc_url: provider
+                    .send_tx_rpc_url
+                    .clone()
+                    .unwrap_or_else(|| global.send_tx_rpc_url.clone()),
                 sender_pubkey: provider_sender_pubkey,
                 sender_private_key_path: provider_sender_private_key,
                 tip_accounts,
