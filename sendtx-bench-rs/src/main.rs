@@ -677,15 +677,39 @@ fn run_provider_benchmark(
     let mut results: Vec<RunResult> = Vec::with_capacity(runs);
     let mut last_slot = grpc.current_slot();
     for i in 0..runs {
-        let triggered_slot = grpc
-            .wait_for_next_slot(last_slot, SLOT_WAIT_TIMEOUT)
-            .ok_or_else(|| {
-                anyhow!(
-                    "[{}] timed out waiting for next slot tick from gRPC ({}s)",
-                    config.provider_name,
+        let triggered_slot = match grpc.wait_for_next_slot(last_slot, SLOT_WAIT_TIMEOUT) {
+            Some(slot) => slot,
+            None => {
+                let current_slot = grpc.current_slot();
+                let err_msg = format!(
+                    "timed out waiting for next slot tick from gRPC ({}s)",
                     SLOT_WAIT_TIMEOUT.as_secs()
-                )
-            })?;
+                );
+                eprintln!("[{}] {}", config.provider_name, err_msg);
+                let skipped = RunResult {
+                    signature: String::new(),
+                    triggered_slot: last_slot,
+                    submit_slot: current_slot,
+                    landed_slot: None,
+                    landed_index_in_block: None,
+                    submit_to_landed_slots: None,
+                    same_slot_landed: false,
+                    send_ack_ms: 0.0,
+                    submit_to_landed_ms: None,
+                    submit_to_landed_grpc_ms: None,
+                    submit_to_block_received_ms: None,
+                    priority_fee: (config.compute_unit_price_micro_lamports
+                        * u64::from(config.compute_unit_limit))
+                        / 1_000_000,
+                    timed_out: true,
+                    error: Some(err_msg),
+                };
+                println!("{}", serde_json::to_string(&skipped)?);
+                results.push(skipped);
+                last_slot = current_slot;
+                continue;
+            }
+        };
         last_slot = triggered_slot;
         println!(
             "[{}] run {}/{} triggered by slot {}",
