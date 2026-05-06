@@ -4,3 +4,4 @@ target
 *.toml
 *.md
 !README.md
+!config.example.toml
