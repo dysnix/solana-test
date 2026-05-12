@@ -24,8 +24,10 @@ program
   .option('-t, --timeout <ms>', 'Request timeout in milliseconds', '30000')
   .option('-m, --methods <methods>', 'Comma-separated list of RPC methods to test (default: all)', '')
   .option('--method-exclude <methods>', 'Comma-separated list of RPC methods to exclude from testing', '')
+  .option('--multiple-accounts-count <number>', 'Number of accounts for getMultipleAccounts requests (default: random 1-5)')
   .option('--health-check-interval <ms>', 'Health check interval in milliseconds', '5000')
   .option('--health-monitoring', 'Enable health monitoring', true)
+  .option('--skip-health-check', 'Skip the pre-run health probe and periodic monitoring (use for send-only endpoints)', false)
   .option('--dry-run', 'Show what would be tested without running', false)
   .option('--progress', 'Show real-time progress', false)
   // .option('--verbose', 'Enable verbose logging', false)
@@ -60,9 +62,15 @@ async function main() {
       timeout: parseInt(options.timeout),
       methods: includedMethods,
       healthCheckInterval: parseInt(options.healthCheckInterval),
+      healthCheck: !options.skipHealthCheck,
       progress: options.progress,
-      gracefulShutdown: true
+      gracefulShutdown: true,
+      multipleAccountsCount: options.multipleAccountsCount !== undefined ? parseInt(options.multipleAccountsCount) : undefined,
     };
+
+    if (config.multipleAccountsCount !== undefined && (!Number.isFinite(config.multipleAccountsCount) || config.multipleAccountsCount <= 0)) {
+      throw new Error('--multiple-accounts-count must be a positive integer');
+    }
 
     logger.debug('Methods parsing', { 
       rawMethods: options.methods, 
@@ -76,9 +84,9 @@ async function main() {
     try {
       const validIncludedMethods = ConfigValidator.validateMethods(config.methods || []);
       const validExcludedMethods = ConfigValidator.validateMethods(excludedMethods);
-      const allSupportedMethods = ConfigValidator.getValidMethods();
+      const defaultMethods = ConfigValidator.getDefaultMethods();
 
-      const baseMethods = validIncludedMethods.length > 0 ? validIncludedMethods : allSupportedMethods;
+      const baseMethods = validIncludedMethods.length > 0 ? validIncludedMethods : defaultMethods;
       config.methods = baseMethods.filter(method => !validExcludedMethods.includes(method));
 
       if (config.methods.length === 0) {
@@ -103,7 +111,7 @@ async function main() {
     logger.info(`Target RPS:   ${chalk.cyan(config.rps)}`);
     logger.info(`Concurrent:   ${chalk.cyan(config.concurrent)}`);
     logger.info(`Timeout:      ${chalk.cyan(config.timeout)}ms`);
-    logger.info(`Health Check: ${chalk.cyan(config.healthCheckInterval)}ms`);
+    logger.info(`Health Check: ${chalk.cyan(config.healthCheck === false ? 'disabled' : `${config.healthCheckInterval}ms`)}`);
     logger.info(`Methods:      ${chalk.cyan(config.methods.length > 0 ? config.methods.join(', ') : 'All methods')}`);
 
     if (options.dryRun) {

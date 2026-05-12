@@ -33,7 +33,11 @@ export class SolanaRpcLoadTester {
     }
 
     try {
-      await this.performHealthCheck();
+      if (this.config.healthCheck !== false) {
+        await this.performHealthCheck();
+      } else {
+        this.logger.info('Health check disabled — skipping pre-run probe');
+      }
       await this.startLoadTest();
       await this.waitForCompletion();
       return this.calculateResults();
@@ -95,7 +99,7 @@ export class SolanaRpcLoadTester {
     }
 
     // Start health monitoring
-    if (this.config.healthMonitoring) {
+    if (this.config.healthMonitoring && this.config.healthCheck !== false) {
       this.startHealthMonitoring();
     }
     
@@ -271,6 +275,8 @@ export class SolanaRpcLoadTester {
         return this.rpcMethodGenerator.getSlot();
       case 'getBalance':
         return this.rpcMethodGenerator.getBalance();
+      case 'getAccountInfo':
+        return this.rpcMethodGenerator.getAccountInfo();
       case 'getTransaction':
         return this.rpcMethodGenerator.getTransaction();
       case 'getSignaturesForAddress':
@@ -291,6 +297,8 @@ export class SolanaRpcLoadTester {
         return this.rpcMethodGenerator.getTokenLargestAccounts();
       case 'getTokenAccountsByDelegate':
         return this.rpcMethodGenerator.getTokenAccountsByDelegate();
+      case 'sendTransaction':
+        return this.rpcMethodGenerator.sendTransaction();
       default:
         throw new Error(`Invalid method specified: ${methodName}. Valid methods: ${this.config.methods.join(', ')}`);
     }

@@ -42,10 +42,14 @@ export interface LoadTestConfig {
   timeout: number; // milliseconds
   healthCheckInterval?: number;
   healthMonitoring?: boolean;
+  /** When false, skip both the pre-run health probe and periodic health monitoring. Use for endpoints that only support sendTransaction. */
+  healthCheck?: boolean;
   gracefulShutdown?: boolean;
   progress?: boolean;
   maxRetries?: number;
   retryDelay?: number;
+  /** Fixed number of accounts for getMultipleAccounts; when omitted, a random count in [1,5] is used */
+  multipleAccountsCount?: number;
 }
 
 export interface LoadTestResults {
@@ -86,6 +90,7 @@ export interface HealthCheckResult {
 export enum RpcMethod {
   GET_SLOT = 'getSlot',
   GET_BALANCE = 'getBalance',
+  GET_ACCOUNT_INFO = 'getAccountInfo',
   GET_TRANSACTION = 'getTransaction',
   GET_SIGNATURES_FOR_ADDRESS = 'getSignaturesForAddress',
   GET_MULTIPLE_ACCOUNTS = 'getMultipleAccounts',
@@ -96,6 +101,7 @@ export enum RpcMethod {
   GET_TOKEN_ACCOUNT_BALANCE = 'getTokenAccountBalance',
   GET_TOKEN_LARGEST_ACCOUNTS = 'getTokenLargestAccounts',
   GET_TOKEN_ACCOUNTS_BY_DELEGATE = 'getTokenAccountsByDelegate',
+  SEND_TRANSACTION = 'sendTransaction',
 }
 
 export enum Commitment {

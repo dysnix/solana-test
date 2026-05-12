@@ -74,6 +74,7 @@ export class ConfigValidator {
   private static readonly VALID_METHODS = [
     'getSlot',
     'getBalance',
+    'getAccountInfo',
     'getTransaction',
     'getSignaturesForAddress',
     'getMultipleAccounts',
@@ -84,7 +85,11 @@ export class ConfigValidator {
     'getTokenAccountBalance',
     'getTokenLargestAccounts',
     'getTokenAccountsByDelegate',
+    'sendTransaction',
   ];
+
+  /** Methods kept out of the default "all methods" pool — must be opted-in via --methods. */
+  private static readonly OPT_IN_METHODS = ['sendTransaction'];
 
   private static isValidUrl(url: string): boolean {
     try {
@@ -129,5 +134,10 @@ export class ConfigValidator {
 
   static getValidMethods(): string[] {
     return [...this.VALID_METHODS];
+  }
+
+  /** Methods auto-selected when --methods is not specified. Excludes opt-in methods like sendTransaction. */
+  static getDefaultMethods(): string[] {
+    return this.VALID_METHODS.filter(m => !this.OPT_IN_METHODS.includes(m));
   }
 }
