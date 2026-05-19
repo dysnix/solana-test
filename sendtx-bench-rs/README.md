@@ -76,6 +76,16 @@ overlaps.
   since it decodes from shreds), with the primary endpoint serving only
   blocks for index-in-block resolution. Without that override, a single
   Yellowstone endpoint carries all three filters.
+- Which slot status wakes the dispatch loop depends on the role:
+  - **Single-endpoint mode** (no `grpc_tracking_url`): the unified subscriber
+    triggers on `SlotProcessed`.
+  - **Split-endpoint mode**: the tracking subscriber triggers on
+    `SlotFirstShredReceived` — the earliest signal that the next leader has
+    started producing the upcoming block. This matches Aperture's behavior
+    (it only emits `SlotFirstShredReceived` + `SlotCompleted` and ignores
+    both `filter_by_commitment` and `interslot_updates`), and gives the
+    dispatch loop the earliest possible slot edge to fire on. The primary
+    (blocks-only) subscriber still uses `SlotProcessed`.
 - `sendTransaction` POSTs reuse a single HTTP/2 connection per provider
   (negotiated via ALPN with rustls). The blockhash is refreshed in a
   background thread every 400 ms so signing never blocks on RPC.
@@ -220,6 +230,23 @@ cargo run --release -- --runs 20 --providers all --config my-config.toml
 | `--output <path>` | Single-provider JSON output path. |
 | `--markdown-output <path>` | Multi-provider Markdown report path. |
 
+### Regenerating a report from a saved JSON
+
+The `report` subcommand re-renders the Markdown comparison from a previously
+saved comparison JSON without re-running the benchmark. The
+`performance_rate_pct` is recomputed from the raw results, so this is also
+the way to apply a newer scoring formula to historical data.
+
+```bash
+# Output defaults to <input>.md alongside the JSON.
+cargo run --release -- report provider_comparison_20260420_121307.json
+
+# Or specify an explicit output path.
+cargo run --release -- report \
+  provider_comparison_20260420_121307.json \
+  --output report.md
+```
+
 ### What you'll see at startup
 
 ```
@@ -305,13 +332,29 @@ Writes both:
 ### Cross-provider performance score
 
 In multi-provider runs the report includes a `performance_rate_pct` per
-provider: a 0–100 normalized score combining (lower is better)
-`avg_submit_to_landed_ms`, `avg_submit_to_landed_slots`, plus (higher is
-better) same-slot landings and overall success ratio. Best provider per
-metric scores 100; others scale relative to the best.
+provider: a 0–100 normalized score averaged across five buckets. For each
+bucket, the best provider scores 100 and others scale relative to that
+best.
+
+| Bucket | Inputs (lower is better unless noted) | Weighting within bucket |
+| --- | --- | --- |
+| `landed_ms` | `avg_submit_to_landed_grpc_ms`, `p90_submit_to_landed_grpc_ms` | 0.2 × avg + 0.8 × p90 |
+| `landed_slots` | `avg_submit_to_landed_slots`, `p90_submit_to_landed_slots` | 0.2 × avg + 0.8 × p90 |
+| `landed_idx` | `avg_landed_index_in_block`, `p90_landed_index_in_block` | 0.5 × avg + 0.5 × p90 |
+| `same_slot` | same-slot landing count *(higher is better)* | n/a |
+| `success_ratio` | landed runs / total runs *(higher is better)* | n/a |
+
+`performance_rate_pct = mean(landed_ms, landed_slots, landed_idx, same_slot, success_ratio)`.
+
+P90 is weighted heavier than avg for latency and slot-delta because tail
+behavior is what kills a relay's usefulness in practice — a provider with a
+good average but bad worst-case shouldn't outscore a steadier one.
+Index-in-block uses an even 50/50 split: tail position in a block matters
+less than tail latency, so p90 shouldn't dominate that bucket.
 
 This score is intended for *relative* comparison within a single run, not
-as an absolute quality measure.
+as an absolute quality measure. To re-score historical data with the
+current formula, use the `report` subcommand on the saved comparison JSON.
 
 ## Tips for fair benchmarks
 

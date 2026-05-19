@@ -14,7 +14,7 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::{Context, Result, anyhow};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use rand::Rng;
 use reqwest::blocking::Client as HttpClient;
 use reqwest::header::{CONNECTION, CONTENT_TYPE};
@@ -41,6 +41,8 @@ const SLOT_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Parser, Debug)]
 #[command(about = "Run Solana sendTransaction benchmark")]
 struct Args {
+    #[command(subcommand)]
+    command: Option<Command>,
     #[arg(long, default_value_t = 1)]
     runs: usize,
     #[arg(long)]
@@ -53,6 +55,19 @@ struct Args {
     provider: Option<String>,
     #[arg(long)]
     markdown_output: Option<String>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Regenerate the markdown comparison report from a saved comparison JSON file.
+    /// performance_rate_pct is recomputed from raw results; the value stored in the JSON is ignored.
+    Report {
+        /// Path to a comparison JSON file produced by a previous multi-provider run.
+        input: String,
+        /// Output markdown path. Defaults to the input path with a `.md` extension.
+        #[arg(long)]
+        output: Option<String>,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -139,7 +154,7 @@ struct ProviderRuntime {
     compute_unit_price_micro_lamports: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct RunResult {
     signature: String,
     triggered_slot: u64,
@@ -156,7 +171,7 @@ struct RunResult {
     error: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct Averages {
     avg_send_ack_ms: f64,
     avg_submit_to_landed_grpc_ms: f64,
@@ -181,7 +196,7 @@ struct OutputData {
     averages: Averages,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct Percentiles {
     p90_send_ack_ms: f64,
     p90_submit_to_landed_grpc_ms: f64,
@@ -323,6 +338,9 @@ fn main() -> Result<()> {
         .map_err(|_| anyhow!("failed to install aws-lc-rs default crypto provider"))?;
 
     let args = Args::parse();
+    if let Some(Command::Report { input, output }) = args.command {
+        return run_report_from_json(&input, output.as_deref());
+    }
     if args.providers.is_some() && args.provider.is_some() {
         return Err(anyhow!(
             "use only one of --providers or --provider (deprecated alias)"
@@ -1257,6 +1275,89 @@ fn build_multi_provider_output_data<'a>(
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct MultiProviderInputData {
+    receiver_pubkey: String,
+    runs_per_provider: usize,
+    #[serde(default)]
+    selected_providers: Vec<String>,
+    providers: Vec<ProviderComparisonInput>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProviderComparisonInput {
+    provider_name: String,
+    sender_pubkey: String,
+    averages: Averages,
+    percentiles: Percentiles,
+    results: Vec<RunResult>,
+}
+
+fn run_report_from_json(input_path: &str, output_path: Option<&str>) -> Result<()> {
+    let raw = fs::read_to_string(input_path)
+        .with_context(|| format!("failed to read input JSON file: {}", input_path))?;
+    let input: MultiProviderInputData = serde_json::from_str(&raw)
+        .with_context(|| format!("failed to parse comparison JSON file: {}", input_path))?;
+
+    let receiver_pubkey = Pubkey::from_str(&input.receiver_pubkey)
+        .with_context(|| format!("invalid receiver_pubkey: {}", input.receiver_pubkey))?;
+
+    let mut benchmarks = Vec::with_capacity(input.providers.len());
+    for provider in input.providers {
+        let sender_pubkey = Pubkey::from_str(&provider.sender_pubkey).with_context(|| {
+            format!(
+                "invalid sender_pubkey for provider {}: {}",
+                provider.provider_name, provider.sender_pubkey
+            )
+        })?;
+        benchmarks.push(ProviderBenchmark {
+            provider_name: provider.provider_name,
+            sender_pubkey,
+            results: provider.results,
+            averages: provider.averages,
+            percentiles: provider.percentiles,
+        });
+    }
+
+    let selected_names = if input.selected_providers.is_empty() {
+        benchmarks
+            .iter()
+            .map(|bench| bench.provider_name.clone())
+            .collect::<Vec<_>>()
+    } else {
+        input.selected_providers
+    };
+
+    let performance = compute_provider_performance(&benchmarks);
+    let markdown = render_markdown_report(
+        &benchmarks,
+        &performance,
+        Pubkey::default(),
+        receiver_pubkey,
+        input.runs_per_provider,
+        &selected_names,
+    );
+
+    let output_filename = match output_path {
+        Some(path) => path.to_string(),
+        None => derive_markdown_filename_from_json(input_path),
+    };
+    fs::write(&output_filename, markdown)
+        .with_context(|| format!("failed to write markdown output file: {}", output_filename))?;
+    println!("Comparison report saved to {}", output_filename);
+    Ok(())
+}
+
+fn derive_markdown_filename_from_json(json_path: &str) -> String {
+    let path = Path::new(json_path);
+    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+        let mut md_path = path.to_path_buf();
+        md_path.set_file_name(format!("{}.md", stem));
+        return md_path.to_string_lossy().into_owned();
+    }
+    format!("{}.md", json_path)
+}
+
 fn normalize_lower_is_better(best: Option<f64>, value: Option<f64>) -> f64 {
     match (best, value) {
         (None, _) => 100.0,
@@ -1289,10 +1390,30 @@ fn compute_provider_performance(
         .filter(|bench| bench.averages.landed_runs > 0)
         .map(|bench| bench.averages.avg_submit_to_landed_grpc_ms)
         .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let best_p90_landed_ms = benchmarks
+        .iter()
+        .filter(|bench| bench.averages.landed_runs > 0)
+        .map(|bench| bench.percentiles.p90_submit_to_landed_grpc_ms)
+        .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let best_avg_landed_slots = benchmarks
         .iter()
         .filter(|bench| bench.averages.landed_runs > 0)
         .map(|bench| bench.averages.avg_submit_to_landed_slots)
+        .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let best_p90_landed_slots = benchmarks
+        .iter()
+        .filter(|bench| bench.averages.landed_runs > 0)
+        .map(|bench| bench.percentiles.p90_submit_to_landed_slots)
+        .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let best_avg_landed_idx = benchmarks
+        .iter()
+        .filter(|bench| bench.averages.landed_runs > 0)
+        .map(|bench| bench.averages.avg_landed_index_in_block)
+        .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let best_p90_landed_idx = benchmarks
+        .iter()
+        .filter(|bench| bench.averages.landed_runs > 0)
+        .map(|bench| bench.percentiles.p90_landed_index_in_block)
         .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let best_same_slot_count = benchmarks
         .iter()
@@ -1311,15 +1432,24 @@ fn compute_provider_performance(
 
     let mut performance = HashMap::with_capacity(benchmarks.len());
     for benchmark in benchmarks {
-        let avg_landed_ms = if benchmark.averages.landed_runs > 0 {
-            Some(benchmark.averages.avg_submit_to_landed_grpc_ms)
+        let (
+            avg_landed_ms,
+            p90_landed_ms,
+            avg_landed_slots,
+            p90_landed_slots,
+            avg_landed_idx,
+            p90_landed_idx,
+        ) = if benchmark.averages.landed_runs > 0 {
+            (
+                Some(benchmark.averages.avg_submit_to_landed_grpc_ms),
+                Some(benchmark.percentiles.p90_submit_to_landed_grpc_ms),
+                Some(benchmark.averages.avg_submit_to_landed_slots),
+                Some(benchmark.percentiles.p90_submit_to_landed_slots),
+                Some(benchmark.averages.avg_landed_index_in_block),
+                Some(benchmark.percentiles.p90_landed_index_in_block),
+            )
         } else {
-            None
-        };
-        let avg_landed_slots = if benchmark.averages.landed_runs > 0 {
-            Some(benchmark.averages.avg_submit_to_landed_slots)
-        } else {
-            None
+            (None, None, None, None, None, None)
         };
         let same_slot_count = benchmark.averages.same_slot_landed_count as f64;
         let success_ratio = if benchmark.averages.total_runs == 0 {
@@ -1328,12 +1458,29 @@ fn compute_provider_performance(
             (benchmark.averages.landed_runs as f64 / benchmark.averages.total_runs as f64) * 100.0
         };
 
-        let landed_ms_score = normalize_lower_is_better(best_avg_landed_ms, avg_landed_ms);
-        let landed_slots_score = normalize_lower_is_better(best_avg_landed_slots, avg_landed_slots);
+        let avg_landed_ms_score = normalize_lower_is_better(best_avg_landed_ms, avg_landed_ms);
+        let p90_landed_ms_score = normalize_lower_is_better(best_p90_landed_ms, p90_landed_ms);
+        let avg_landed_slots_score =
+            normalize_lower_is_better(best_avg_landed_slots, avg_landed_slots);
+        let p90_landed_slots_score =
+            normalize_lower_is_better(best_p90_landed_slots, p90_landed_slots);
+        let avg_landed_idx_score = normalize_lower_is_better(best_avg_landed_idx, avg_landed_idx);
+        let p90_landed_idx_score = normalize_lower_is_better(best_p90_landed_idx, p90_landed_idx);
+        // Weight p90 heavier than avg (0.8 / 0.2) so tail latency dominates —
+        // a provider with a good average but bad worst-case lands shouldn't win.
+        let landed_ms_score = 0.2 * avg_landed_ms_score + 0.8 * p90_landed_ms_score;
+        let landed_slots_score = 0.2 * avg_landed_slots_score + 0.8 * p90_landed_slots_score;
+        // Idx-in-block weighs avg and p90 equally (50/50) — tail position matters
+        // less than tail latency, so don't let p90 dominate this bucket.
+        let landed_idx_score = 0.5 * avg_landed_idx_score + 0.5 * p90_landed_idx_score;
         let same_slot_score = normalize_higher_is_better(best_same_slot_count, same_slot_count);
         let success_ratio_score = normalize_higher_is_better(best_success_ratio, success_ratio);
-        let performance_rate_pct =
-            (landed_ms_score + landed_slots_score + same_slot_score + success_ratio_score) / 4.0;
+        let performance_rate_pct = (landed_ms_score
+            + landed_slots_score
+            + landed_idx_score
+            + same_slot_score
+            + success_ratio_score)
+            / 5.0;
 
         performance.insert(
             benchmark.provider_name.clone(),

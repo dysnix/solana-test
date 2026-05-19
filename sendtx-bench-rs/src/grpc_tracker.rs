@@ -10,7 +10,7 @@ use solana_sdk::signature::Signature;
 use tokio::runtime::Runtime;
 use yellowstone_grpc_client::{ClientTlsConfig, GeyserGrpcClient};
 use yellowstone_grpc_proto::prelude::{
-    CommitmentLevel, SubscribeRequest, SubscribeRequestFilterBlocks,
+    CommitmentLevel, SlotStatus, SubscribeRequest, SubscribeRequestFilterBlocks,
     SubscribeRequestFilterSlots, SubscribeRequestFilterTransactions,
     SubscribeRequestPing, subscribe_update::UpdateOneof,
 };
@@ -269,6 +269,18 @@ async fn run_subscriber(
         SubscriberRole::All | SubscriberRole::SlotsAndTransactions
     );
 
+    // Aperture only emits SlotFirstShredReceived and SlotCompleted and ignores
+    // both `filter_by_commitment` and `interslot_updates`, so for the tracking
+    // role we must gate on a status it actually sends. We pick FirstShredReceived
+    // because it's the earliest signal the next leader has started producing —
+    // matching the dispatch loop's intent of landing near the front of the
+    // upcoming block. Vanilla Yellowstone still gates on SlotProcessed.
+    let advance_on: i32 = match role {
+        SubscriberRole::All => SlotStatus::SlotProcessed as i32,
+        SubscriberRole::SlotsAndTransactions => SlotStatus::SlotFirstShredReceived as i32,
+        SubscriberRole::BlocksOnly => SlotStatus::SlotProcessed as i32,
+    };
+
     let mut transactions_filter = HashMap::new();
     if want_transactions {
         transactions_filter.insert(
@@ -299,6 +311,10 @@ async fn run_subscriber(
 
     let mut slots_filter = HashMap::new();
     if want_slots {
+        // Aperture ignores both `filter_by_commitment` and `interslot_updates`
+        // (it always streams SlotFirstShredReceived + SlotCompleted). The values
+        // below are honored only by vanilla Yellowstone; selection of which
+        // status to act on happens consumer-side via `advance_on` above.
         slots_filter.insert(
             "slots".to_string(),
             SubscribeRequestFilterSlots {
@@ -347,7 +363,7 @@ async fn run_subscriber(
 
         match update.update_oneof {
             Some(UpdateOneof::Slot(slot_update)) => {
-                if slot_update.status == CommitmentLevel::Processed as i32 {
+                if slot_update.status == advance_on {
                     let (m, cv) = &*slot_state;
                     {
                         let mut guard = m.lock().expect("slot lock poisoned");
