@@ -149,7 +149,6 @@ struct RunResult {
     submit_to_landed_slots: Option<i64>,
     same_slot_landed: bool,
     send_ack_ms: f64,
-    submit_to_landed_ms: Option<f64>,
     submit_to_landed_grpc_ms: Option<f64>,
     submit_to_block_received_ms: Option<f64>,
     priority_fee: u64,
@@ -160,7 +159,6 @@ struct RunResult {
 #[derive(Debug, Serialize)]
 struct Averages {
     avg_send_ack_ms: f64,
-    avg_submit_to_landed_ms: f64,
     avg_submit_to_landed_grpc_ms: f64,
     avg_submit_to_block_received_ms: f64,
     avg_submit_to_landed_slots: f64,
@@ -186,7 +184,6 @@ struct OutputData {
 #[derive(Debug, Serialize)]
 struct Percentiles {
     p90_send_ack_ms: f64,
-    p90_submit_to_landed_ms: f64,
     p90_submit_to_landed_grpc_ms: f64,
     p90_submit_to_block_received_ms: f64,
     p90_submit_to_landed_slots: f64,
@@ -695,7 +692,6 @@ fn run_provider_benchmark(
                     submit_to_landed_slots: None,
                     same_slot_landed: false,
                     send_ack_ms: 0.0,
-                    submit_to_landed_ms: None,
                     submit_to_landed_grpc_ms: None,
                     submit_to_block_received_ms: None,
                     priority_fee: (config.compute_unit_price_micro_lamports
@@ -718,7 +714,43 @@ fn run_provider_benchmark(
             runs,
             triggered_slot
         );
-        let result = run_transfer(config, &send_tx_sender, grpc, &runner, i, triggered_slot)?;
+        let result = match run_transfer(
+            config,
+            &send_tx_sender,
+            grpc,
+            &runner,
+            i,
+            triggered_slot,
+        ) {
+            Ok(result) => result,
+            Err(err) => {
+                let err_msg = format!("{:#}", err);
+                eprintln!(
+                    "[{}] run {}/{} failed: {}",
+                    config.provider_name,
+                    i + 1,
+                    runs,
+                    err_msg
+                );
+                RunResult {
+                    signature: String::new(),
+                    triggered_slot,
+                    submit_slot: grpc.current_slot(),
+                    landed_slot: None,
+                    landed_index_in_block: None,
+                    submit_to_landed_slots: None,
+                    same_slot_landed: false,
+                    send_ack_ms: 0.0,
+                    submit_to_landed_grpc_ms: None,
+                    submit_to_block_received_ms: None,
+                    priority_fee: (config.compute_unit_price_micro_lamports
+                        * u64::from(config.compute_unit_limit))
+                        / 1_000_000,
+                    timed_out: true,
+                    error: Some(err_msg),
+                }
+            }
+        };
         println!("{}", serde_json::to_string(&result)?);
         results.push(result);
     }
@@ -792,7 +824,7 @@ fn run_transfer(
         .ok_or_else(|| anyhow!("signed transaction has no signature"))?;
     let submit_started = Instant::now();
     let submit_wall = SystemTime::now();
-    let pending = grpc.register(signature.to_string(), submit_started, submit_wall);
+    let pending = grpc.register(signature.to_string(), submit_wall);
     let submit_slot = grpc.current_slot();
     let signature_str = send_tx_sender.send_transaction(&tx)?;
     let send_ack_ms = submit_started.elapsed().as_secs_f64() * 1000.0;
@@ -814,15 +846,15 @@ fn run_transfer(
     );
 
     let deadline = Instant::now() + CONFIRM_TIMEOUT;
-    let mut landed_slot: Option<u64> = None;
-    let mut landed_local_ms: Option<f64> = None;
-    let mut landed_grpc_ms: Option<f64> = None;
-    let mut landed_index_in_block: Option<usize> = None;
-    let mut block_received_local_ms: Option<f64> = None;
+    let mut tx_slot: Option<u64> = None;
+    let mut tx_grpc_ms: Option<f64> = None;
+    let mut block_slot: Option<u64> = None;
+    let mut block_index: Option<usize> = None;
+    let mut block_grpc_ms: Option<f64> = None;
     let mut error: Option<String> = None;
 
     while Instant::now() < deadline {
-        if landed_slot.is_some() && landed_index_in_block.is_some() {
+        if tx_slot.is_some() && block_slot.is_some() {
             break;
         }
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -832,14 +864,12 @@ fn run_transfer(
         match pending.receiver.recv_timeout(remaining) {
             Ok(LandingEvent::Transaction {
                 slot,
-                local_received_ms,
                 grpc_created_at_ms,
                 err,
             }) => {
-                if landed_slot.is_none() {
-                    landed_slot = Some(slot);
-                    landed_local_ms = Some(local_received_ms);
-                    landed_grpc_ms = grpc_created_at_ms;
+                if tx_slot.is_none() {
+                    tx_slot = Some(slot);
+                    tx_grpc_ms = grpc_created_at_ms;
                 }
                 if let Some(e) = err {
                     error = Some(format!("transaction failed: {}", e));
@@ -849,17 +879,13 @@ fn run_transfer(
             Ok(LandingEvent::Block {
                 slot,
                 index_in_block,
-                local_received_ms,
                 grpc_created_at_ms,
             }) => {
-                if landed_slot.is_none() {
-                    landed_slot = Some(slot);
+                if block_slot.is_none() {
+                    block_slot = Some(slot);
+                    block_index = Some(index_in_block);
+                    block_grpc_ms = grpc_created_at_ms;
                 }
-                if landed_grpc_ms.is_none() {
-                    landed_grpc_ms = grpc_created_at_ms;
-                }
-                landed_index_in_block = Some(index_in_block);
-                block_received_local_ms = Some(local_received_ms);
             }
             Err(RecvTimeoutError::Timeout) => break,
             Err(RecvTimeoutError::Disconnected) => break,
@@ -868,6 +894,27 @@ fn run_transfer(
 
     drop(pending);
 
+    // Cross-check: if both subscriptions reported the tx, the slot they reported
+    // must match. A mismatch indicates a tracking-pipeline bug or a stale subscriber
+    // and we refuse to silently pick one.
+    if let (Some(ts), Some(bs)) = (tx_slot, block_slot) {
+        if ts != bs && error.is_none() {
+            error = Some(format!(
+                "slot mismatch: tx subscription reported slot {} but block subscription reported slot {}",
+                ts, bs
+            ));
+        }
+    }
+
+    // Block subscription is the only trustworthy source for in-block index. Vanilla
+    // Yellowstone derives `tx.index` from the bank's geyser callback (real in-block
+    // position), but shred-backed feeds like Aperture can't compute it without
+    // replaying the block, so their tx-stream index is unreliable. We therefore
+    // never fall back to the tx subscription for index; if the Block subscriber
+    // didn't deliver, landed_index_in_block stays None.
+    let landed_slot = block_slot.or(tx_slot);
+    let landed_index_in_block = block_index;
+
     let timed_out = landed_slot.is_none() && error.is_none();
     if timed_out {
         error = Some(format!(
@@ -875,6 +922,15 @@ fn run_transfer(
             CONFIRM_TIMEOUT.as_millis()
         ));
     }
+
+    // All landing latency metrics use the gRPC server's `created_at` wall-clock
+    // timestamp on the SubscribeUpdate envelope (not our local Instant). This
+    // excludes the downlink hop from the gRPC server back to the bench host but
+    // assumes the gRPC server's clock is not skewed relative to ours — fine for
+    // our setup. submit_to_landed_grpc_ms is "first event seen via tx-stream,
+    // falling back to the block-stream event if tx-stream didn't deliver".
+    let landed_grpc_ms = tx_grpc_ms.or(block_grpc_ms);
+    let block_received_grpc_ms = block_grpc_ms;
 
     let submit_to_landed_slots = landed_slot.map(|slot| slot as i64 - submit_slot as i64);
     let same_slot_landed = landed_slot.map(|slot| slot == submit_slot).unwrap_or(false);
@@ -888,9 +944,8 @@ fn run_transfer(
         submit_to_landed_slots,
         same_slot_landed,
         send_ack_ms,
-        submit_to_landed_ms: landed_local_ms,
         submit_to_landed_grpc_ms: landed_grpc_ms,
-        submit_to_block_received_ms: block_received_local_ms,
+        submit_to_block_received_ms: block_received_grpc_ms,
         priority_fee: (config.compute_unit_price_micro_lamports
             * u64::from(config.compute_unit_limit))
             / 1_000_000,
@@ -1035,7 +1090,6 @@ fn compute_averages(results: &[RunResult], total_runs: usize) -> Averages {
     if results.is_empty() {
         return Averages {
             avg_send_ack_ms: 0.0,
-            avg_submit_to_landed_ms: 0.0,
             avg_submit_to_landed_grpc_ms: 0.0,
             avg_submit_to_block_received_ms: 0.0,
             avg_submit_to_landed_slots: 0.0,
@@ -1067,9 +1121,6 @@ fn compute_averages(results: &[RunResult], total_runs: usize) -> Averages {
 
     Averages {
         avg_send_ack_ms: results.iter().map(|r| r.send_ack_ms).sum::<f64>() / results.len() as f64,
-        avg_submit_to_landed_ms: average_optional_f64(
-            results.iter().map(|r| r.submit_to_landed_ms),
-        ),
         avg_submit_to_landed_grpc_ms: average_optional_f64(
             results.iter().map(|r| r.submit_to_landed_grpc_ms),
         ),
@@ -1100,12 +1151,6 @@ fn compute_averages(results: &[RunResult], total_runs: usize) -> Averages {
 fn compute_percentiles(results: &[RunResult]) -> Percentiles {
     Percentiles {
         p90_send_ack_ms: p90_f64(results.iter().map(|r| r.send_ack_ms).collect()),
-        p90_submit_to_landed_ms: p90_f64(
-            results
-                .iter()
-                .filter_map(|r| r.submit_to_landed_ms)
-                .collect(),
-        ),
         p90_submit_to_landed_grpc_ms: p90_f64(
             results
                 .iter()
@@ -1242,7 +1287,7 @@ fn compute_provider_performance(
     let best_avg_landed_ms = benchmarks
         .iter()
         .filter(|bench| bench.averages.landed_runs > 0)
-        .map(|bench| bench.averages.avg_submit_to_landed_ms)
+        .map(|bench| bench.averages.avg_submit_to_landed_grpc_ms)
         .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let best_avg_landed_slots = benchmarks
         .iter()
@@ -1267,7 +1312,7 @@ fn compute_provider_performance(
     let mut performance = HashMap::with_capacity(benchmarks.len());
     for benchmark in benchmarks {
         let avg_landed_ms = if benchmark.averages.landed_runs > 0 {
-            Some(benchmark.averages.avg_submit_to_landed_ms)
+            Some(benchmark.averages.avg_submit_to_landed_grpc_ms)
         } else {
             None
         };
@@ -1326,9 +1371,9 @@ fn render_markdown_report(
         "- Selected providers: `{}`\n\n",
         selected_providers.join(", ")
     ));
-    out.push_str("| Provider | Sender | Avg Ack ms | P90 Ack ms | Avg Landed ms | P90 Landed ms | Avg gRPC Landed ms | P90 gRPC Landed ms | Avg Block ms | P90 Block ms | Avg Landed slots | P90 Landed slots | Avg Idx-in-Block | P90 Idx-in-Block | Avg Priority Fee | Max Slots | Min Slots | Same-slot landed | Landed runs | Block seen | Total runs | Success ratio % | Performance rate % |\n");
+    out.push_str("| Provider | Sender | Avg Ack ms | P90 Ack ms | Avg Landed ms | P90 Landed ms | Avg Block ms | P90 Block ms | Avg Landed slots | P90 Landed slots | Avg Idx-in-Block | P90 Idx-in-Block | Avg Priority Fee | Max Slots | Min Slots | Same-slot landed | Landed runs | Block seen | Total runs | Success ratio % | Performance rate % |\n");
     out.push_str(
-        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n",
     );
 
     for benchmark in benchmarks {
@@ -1342,13 +1387,11 @@ fn render_markdown_report(
                 performance_rate_pct: 0.0,
             });
         out.push_str(&format!(
-            "| {} | `{}` | {:.3} | {:.3} | {:.3} | {:.3} | {:.3} | {:.3} | {:.3} | {:.3} | {:.3} | {:.3} | {:.2} | {:.2} | {:.3} | {} | {} | {} | {} | {} | {} | {:.2} | {:.2} |\n",
+            "| {} | `{}` | {:.3} | {:.3} | {:.3} | {:.3} | {:.3} | {:.3} | {:.3} | {:.3} | {:.2} | {:.2} | {:.3} | {} | {} | {} | {} | {} | {} | {:.2} | {:.2} |\n",
             benchmark.provider_name,
             benchmark.sender_pubkey,
             avg.avg_send_ack_ms,
             p90.p90_send_ack_ms,
-            avg.avg_submit_to_landed_ms,
-            p90.p90_submit_to_landed_ms,
             avg.avg_submit_to_landed_grpc_ms,
             p90.p90_submit_to_landed_grpc_ms,
             avg.avg_submit_to_block_received_ms,

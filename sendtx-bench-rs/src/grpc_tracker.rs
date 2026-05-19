@@ -31,20 +31,17 @@ enum SubscriberRole {
 pub enum LandingEvent {
     Transaction {
         slot: u64,
-        local_received_ms: f64,
         grpc_created_at_ms: Option<f64>,
         err: Option<String>,
     },
     Block {
         slot: u64,
         index_in_block: usize,
-        local_received_ms: f64,
         grpc_created_at_ms: Option<f64>,
     },
 }
 
 struct PendingEntry {
-    submit_started: Instant,
     submit_wall: SystemTime,
     sender: mpsc::Sender<LandingEvent>,
 }
@@ -176,15 +173,9 @@ impl GrpcTracker {
         }
     }
 
-    pub fn register(
-        &self,
-        signature: String,
-        submit_started: Instant,
-        submit_wall: SystemTime,
-    ) -> PendingHandle {
+    pub fn register(&self, signature: String, submit_wall: SystemTime) -> PendingHandle {
         let (tx, rx) = mpsc::channel();
         let entry = PendingEntry {
-            submit_started,
             submit_wall,
             sender: tx,
         };
@@ -352,7 +343,6 @@ async fn run_subscriber(
             }
         };
 
-        let now = Instant::now();
         let created_at = update.created_at.clone();
 
         match update.update_oneof {
@@ -380,11 +370,10 @@ async fn run_subscriber(
                         None => continue,
                     };
                     let entry = match pending.lock().unwrap().get(&sig_str) {
-                        Some(e) => Some((e.submit_started, e.submit_wall, e.sender.clone())),
+                        Some(e) => Some((e.submit_wall, e.sender.clone())),
                         None => None,
                     };
-                    if let Some((started, wall, sender)) = entry {
-                        let local_ms = duration_ms(now.duration_since(started));
+                    if let Some((wall, sender)) = entry {
                         let grpc_ms = grpc_relative_ms(wall, &created_at);
                         let err = tx_info
                             .meta
@@ -393,7 +382,6 @@ async fn run_subscriber(
                             .map(|e| format!("{:?}", e));
                         let _ = sender.send(LandingEvent::Transaction {
                             slot,
-                            local_received_ms: local_ms,
                             grpc_created_at_ms: grpc_ms,
                             err,
                         });
@@ -411,7 +399,11 @@ async fn run_subscriber(
                     guard.keys().cloned().collect()
                 };
 
-                for (idx, tx) in block_update.transactions.iter().enumerate() {
+                // The Block subscription is filtered by account_include=sender_pubkeys, so
+                // the `transactions` vec only contains txs touching our senders. We MUST
+                // use `tx.index` (the protobuf-reported position in the full block) rather
+                // than the position in this filtered vec.
+                for tx in block_update.transactions.iter() {
                     let sig_str = match signature_from_bytes(&tx.signature) {
                         Some(s) => s,
                         None => continue,
@@ -419,17 +411,25 @@ async fn run_subscriber(
                     if !pending_set.contains(&sig_str) {
                         continue;
                     }
+                    let block_index = match usize::try_from(tx.index) {
+                        Ok(v) => v,
+                        Err(_) => {
+                            eprintln!(
+                                "[grpc-tracker] block tx {} reported with out-of-range index {}",
+                                sig_str, tx.index
+                            );
+                            continue;
+                        }
+                    };
                     let entry = match pending.lock().unwrap().get(&sig_str) {
-                        Some(e) => Some((e.submit_started, e.submit_wall, e.sender.clone())),
+                        Some(e) => Some((e.submit_wall, e.sender.clone())),
                         None => None,
                     };
-                    if let Some((started, wall, sender)) = entry {
-                        let local_ms = duration_ms(now.duration_since(started));
+                    if let Some((wall, sender)) = entry {
                         let grpc_ms = grpc_relative_ms(wall, &created_at);
                         let _ = sender.send(LandingEvent::Block {
                             slot: block_slot,
-                            index_in_block: idx,
-                            local_received_ms: local_ms,
+                            index_in_block: block_index,
                             grpc_created_at_ms: grpc_ms,
                         });
                     }
@@ -455,10 +455,6 @@ fn signature_from_bytes(bytes: &[u8]) -> Option<String> {
         return None;
     }
     Signature::try_from(bytes).ok().map(|s| s.to_string())
-}
-
-fn duration_ms(d: Duration) -> f64 {
-    d.as_secs_f64() * 1000.0
 }
 
 fn grpc_relative_ms(
