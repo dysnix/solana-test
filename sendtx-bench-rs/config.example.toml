@@ -1,7 +1,3 @@
-[[receiver]]
-pubkey = ""
-private_key = "receiver_pk.json"
-
 [[sender]]
 pubkey = ""
 private_key = "sender_pk.json"
@@ -12,21 +8,24 @@ tip_amount = 1000000
 # Memo program alone burns ~5-12k CU for short memos; 100k leaves headroom.
 compute_unit_limit = 100000
 compute_unit_price_micro_lamports = 100000
+# rpc_url is used for regular RPC calls, send_tx_rpc_url is used for sending transactions only.
 rpc_url = "https://solana-rpc.rpcfast.com/?api_key="
+send_tx_rpc_url = "https://beam.rpcfast.com/?api_key="
 # Primary gRPC endpoint. When grpc_tracking_url is unset it carries slots,
 # transactions and blocks; when set it carries blocks only (since Aperture does
 # not expose a blocks subscription).
-grpc_url = "https://yellowstone-grpc.example.com"
-# grpc_x_token = ""
+grpc_url = "https://solana-yellowstone-grpc.rpcfast.com"
+grpc_x_token = "your-token-here"
 # Optional faster endpoint for slots + transactions (e.g. rpcfast Aperture gRPC,
 # ~30-40ms ahead of vanilla Yellowstone since it decodes from shreds).
 # grpc_tracking_url = "https://aperture-grpc.rpcfast.com"
-# grpc_tracking_x_token = ""
+# grpc_tracking_x_token = "your-token-here"
 
 [[provider]]
 name = "rpcfast-astralane"
 # Optional overrides for global defaults:
 # rpc_url = "https://custom-rpc-url-for-this-provider"
+# send_tx_rpc_url
 # tip_amount = 1500000
 # compute_unit_limit = 12000
 # compute_unit_price_micro_lamports = 200000

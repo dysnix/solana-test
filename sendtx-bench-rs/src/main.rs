@@ -75,8 +75,6 @@ struct BenchConfigFile {
     #[serde(default)]
     global: Vec<GlobalConfig>,
     #[serde(default)]
-    receiver: Vec<ActorConfig>,
-    #[serde(default)]
     sender: Vec<ActorConfig>,
     #[serde(default)]
     provider: Vec<ProviderConfig>,
@@ -133,7 +131,6 @@ struct RuntimeConfig {
 
 struct LoadedConfig {
     default_sender_pubkey: Pubkey,
-    receiver_pubkey: Pubkey,
     providers: Vec<ProviderRuntime>,
     grpc_url: String,
     grpc_x_token: Option<String>,
@@ -191,7 +188,6 @@ struct Averages {
 struct OutputData {
     provider_name: String,
     sender_pubkey: String,
-    receiver_pubkey: String,
     results: Vec<RunResult>,
     averages: Averages,
 }
@@ -217,7 +213,6 @@ struct ProviderBenchmark {
 struct MultiProviderOutputData<'a> {
     generated_at: String,
     sender_pubkey: String,
-    receiver_pubkey: String,
     runs_per_provider: usize,
     selected_providers: Vec<String>,
     providers: Vec<ProviderComparisonOutput<'a>>,
@@ -356,7 +351,6 @@ fn main() -> Result<()> {
 
     println!("Selected providers: {}", selected_names.join(", "));
     println!("Default sender: {}", loaded.default_sender_pubkey);
-    println!("Selected receiver: {}", loaded.receiver_pubkey);
 
     preflight_balance_check(&selected_providers, args.runs)?;
 
@@ -452,7 +446,6 @@ fn main() -> Result<()> {
         let output_data = OutputData {
             provider_name: benchmark.provider_name,
             sender_pubkey: benchmark.sender_pubkey.to_string(),
-            receiver_pubkey: loaded.receiver_pubkey.to_string(),
             results: benchmark.results,
             averages: benchmark.averages,
         };
@@ -474,7 +467,6 @@ fn main() -> Result<()> {
         &benchmarks,
         &performance,
         loaded.default_sender_pubkey,
-        loaded.receiver_pubkey,
         args.runs,
         &selected_names,
     );
@@ -514,9 +506,6 @@ impl LoadedConfig {
         if config_file.sender.is_empty() {
             return Err(anyhow!("config requires at least one [[sender]] section"));
         }
-        if config_file.receiver.is_empty() {
-            return Err(anyhow!("config requires at least one [[receiver]] section"));
-        }
         if config_file.global.is_empty() {
             return Err(anyhow!("config requires at least one [[global]] section"));
         }
@@ -532,14 +521,8 @@ impl LoadedConfig {
             .sender
             .first()
             .ok_or_else(|| anyhow!("config requires at least one [[sender]] section"))?;
-        let selected_receiver = config_file
-            .receiver
-            .first()
-            .ok_or_else(|| anyhow!("config requires at least one [[receiver]] section"))?;
         let sender_pubkey =
             Pubkey::from_str(&selected_sender.pubkey).context("invalid sender pubkey in config")?;
-        let receiver_pubkey = Pubkey::from_str(&selected_receiver.pubkey)
-            .context("invalid receiver pubkey in config")?;
 
         let mut providers = Vec::with_capacity(config_file.provider.len());
         for provider in &config_file.provider {
@@ -594,7 +577,6 @@ impl LoadedConfig {
 
         Ok(Self {
             default_sender_pubkey: sender_pubkey,
-            receiver_pubkey,
             providers,
             grpc_url: global.grpc_url.clone(),
             grpc_x_token: global.grpc_x_token.clone(),
@@ -1268,7 +1250,6 @@ fn build_multi_provider_output_data<'a>(
     MultiProviderOutputData {
         generated_at: chrono::Local::now().to_rfc3339(),
         sender_pubkey: format_sender_summary(benchmarks, loaded.default_sender_pubkey),
-        receiver_pubkey: loaded.receiver_pubkey.to_string(),
         runs_per_provider: runs,
         selected_providers: selected_providers.to_vec(),
         providers,
@@ -1277,7 +1258,6 @@ fn build_multi_provider_output_data<'a>(
 
 #[derive(Debug, Deserialize)]
 struct MultiProviderInputData {
-    receiver_pubkey: String,
     runs_per_provider: usize,
     #[serde(default)]
     selected_providers: Vec<String>,
@@ -1298,9 +1278,6 @@ fn run_report_from_json(input_path: &str, output_path: Option<&str>) -> Result<(
         .with_context(|| format!("failed to read input JSON file: {}", input_path))?;
     let input: MultiProviderInputData = serde_json::from_str(&raw)
         .with_context(|| format!("failed to parse comparison JSON file: {}", input_path))?;
-
-    let receiver_pubkey = Pubkey::from_str(&input.receiver_pubkey)
-        .with_context(|| format!("invalid receiver_pubkey: {}", input.receiver_pubkey))?;
 
     let mut benchmarks = Vec::with_capacity(input.providers.len());
     for provider in input.providers {
@@ -1333,7 +1310,6 @@ fn run_report_from_json(input_path: &str, output_path: Option<&str>) -> Result<(
         &benchmarks,
         &performance,
         Pubkey::default(),
-        receiver_pubkey,
         input.runs_per_provider,
         &selected_names,
     );
@@ -1498,7 +1474,6 @@ fn render_markdown_report(
     benchmarks: &[ProviderBenchmark],
     performance: &HashMap<String, ProviderPerformance>,
     default_sender: Pubkey,
-    receiver_pubkey: Pubkey,
     runs: usize,
     selected_providers: &[String],
 ) -> String {
@@ -1512,7 +1487,6 @@ fn render_markdown_report(
         "- Sender(s): `{}`\n",
         format_sender_summary(benchmarks, default_sender)
     ));
-    out.push_str(&format!("- Receiver: `{}`\n", receiver_pubkey));
     out.push_str(&format!("- Runs per provider: `{}`\n", runs));
     out.push_str(&format!(
         "- Selected providers: `{}`\n\n",
