@@ -3,6 +3,7 @@ mod grpc_tracker;
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::net::SocketAddr;
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -14,6 +15,10 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::{Context, Result, anyhow};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use beam_quic_client::{
+    BeamQuicClient, BeamQuicClientConfig, Provider as BeamProvider, RoutingMode as BeamRoutingMode,
+    SendTransactionFastOptions, SendTransactionOptions,
+};
 use clap::{Parser, Subcommand};
 use rand::Rng;
 use reqwest::blocking::Client as HttpClient;
@@ -27,7 +32,7 @@ use solana_compute_budget_interface::ComputeBudgetInstruction;
 use solana_sdk::hash::Hash;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::{Keypair, Signature, Signer};
-use solana_sdk::transaction::Transaction;
+use solana_sdk::transaction::{Transaction, VersionedTransaction};
 use solana_system_interface::instruction as system_instruction;
 
 use crate::grpc_tracker::{GrpcTracker, LandingEvent};
@@ -89,8 +94,18 @@ struct ActorConfig {
 #[derive(Debug, Deserialize)]
 struct ProviderConfig {
     name: String,
+    #[serde(default)]
+    send_transport: Option<SendTransport>,
     rpc_url: Option<String>,
     send_tx_rpc_url: Option<String>,
+    beam_quic_endpoint: Option<String>,
+    beam_quic_api_key: Option<String>,
+    beam_quic_provider: Option<String>,
+    beam_quic_mode: Option<String>,
+    beam_quic_method: Option<String>,
+    beam_quic_server_name: Option<String>,
+    beam_quic_ca_cert_path: Option<String>,
+    beam_quic_danger_accept_invalid_server_cert: Option<bool>,
     sender_pubkey: Option<String>,
     sender_private_key: Option<String>,
     #[serde(default)]
@@ -102,11 +117,29 @@ struct ProviderConfig {
 
 #[derive(Debug, Deserialize)]
 struct GlobalConfig {
+    #[serde(default)]
+    send_transport: SendTransport,
     tip_amount: u64,
     compute_unit_limit: u32,
     compute_unit_price_micro_lamports: u64,
     rpc_url: String,
     send_tx_rpc_url: String,
+    #[serde(default)]
+    beam_quic_endpoint: Option<String>,
+    #[serde(default)]
+    beam_quic_api_key: Option<String>,
+    #[serde(default)]
+    beam_quic_provider: Option<String>,
+    #[serde(default)]
+    beam_quic_mode: Option<String>,
+    #[serde(default)]
+    beam_quic_method: Option<String>,
+    #[serde(default)]
+    beam_quic_server_name: Option<String>,
+    #[serde(default)]
+    beam_quic_ca_cert_path: Option<String>,
+    #[serde(default)]
+    beam_quic_danger_accept_invalid_server_cert: Option<bool>,
     grpc_url: String,
     #[serde(default)]
     grpc_x_token: Option<String>,
@@ -121,6 +154,7 @@ struct RuntimeConfig {
     provider_name: String,
     rpc_url: String,
     send_tx_rpc_url: String,
+    send_target: SendTargetConfig,
     sender_pubkey: Pubkey,
     sender_private_key_path: String,
     tip_accounts: Vec<Pubkey>,
@@ -143,12 +177,47 @@ struct ProviderRuntime {
     name: String,
     rpc_url: String,
     send_tx_rpc_url: String,
+    send_target: SendTargetConfig,
     sender_pubkey: Pubkey,
     sender_private_key_path: String,
     tip_accounts: Vec<Pubkey>,
     tip_amount: u64,
     compute_unit_limit: u32,
     compute_unit_price_micro_lamports: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum SendTransport {
+    #[default]
+    Http,
+    #[serde(alias = "beam_quic")]
+    BeamQuic,
+}
+
+#[derive(Clone, Debug)]
+enum SendTargetConfig {
+    Http,
+    BeamQuic(BeamQuicRuntimeConfig),
+}
+
+#[derive(Clone, Debug)]
+struct BeamQuicRuntimeConfig {
+    endpoint: String,
+    api_key: String,
+    provider: Option<BeamProvider>,
+    mode: BeamRoutingMode,
+    method: BeamQuicMethod,
+    server_name: Option<String>,
+    ca_cert_path: Option<String>,
+    danger_accept_invalid_server_cert: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+enum BeamQuicMethod {
+    #[default]
+    SendTransaction,
+    SendTransactionFast,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -265,7 +334,6 @@ impl PersistentRpcSender {
         let request_id = self.request_id.fetch_add(1, Ordering::Relaxed) + 1;
         let encoded_tx = BASE64_STANDARD
             .encode(bincode::serialize(tx).context("failed to serialize transaction")?);
-
         let payload = json!({
             "jsonrpc": "2.0",
             "id": request_id,
@@ -324,6 +392,115 @@ impl PersistentRpcSender {
         }
 
         Err(anyhow!("sendTransaction request failed after retries"))
+    }
+}
+
+struct BeamQuicSender {
+    runtime: tokio::runtime::Runtime,
+    client: BeamQuicClient,
+    provider: Option<BeamProvider>,
+    mode: BeamRoutingMode,
+    method: BeamQuicMethod,
+    request_id: AtomicU64,
+}
+
+impl BeamQuicSender {
+    fn new(config: BeamQuicRuntimeConfig) -> Result<Self> {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .context("failed to build Beam QUIC tokio runtime")?;
+
+        let client_config = BeamQuicClientConfig {
+            endpoint: runtime
+                .block_on(resolve_beam_quic_endpoint(&config.endpoint))
+                .with_context(|| {
+                    format!("failed to resolve Beam QUIC endpoint '{}'", config.endpoint)
+                })?,
+            api_key: config.api_key,
+            server_name: config
+                .server_name
+                .unwrap_or_else(|| infer_beam_quic_server_name(&config.endpoint)),
+            ca_cert_path: config.ca_cert_path.map(Into::into),
+            danger_accept_invalid_server_cert: config.danger_accept_invalid_server_cert,
+            alpn: "beam-submit-v1".to_string(),
+        };
+        let client = runtime
+            .block_on(BeamQuicClient::connect_with_config(client_config))
+            .context("failed to connect to Beam QUIC endpoint")?;
+
+        Ok(Self {
+            runtime,
+            client,
+            provider: config.provider,
+            mode: config.mode,
+            method: config.method,
+            request_id: AtomicU64::new(0),
+        })
+    }
+
+    fn send_transaction(&self, tx: &Transaction, signature: Signature) -> Result<String> {
+        let request_id = self.request_id.fetch_add(1, Ordering::Relaxed) + 1;
+        let versioned_tx = VersionedTransaction::from(tx.clone());
+        match self.method {
+            BeamQuicMethod::SendTransaction => {
+                let result = self
+                    .runtime
+                    .block_on(self.client.send_versioned_transaction(
+                        &versioned_tx,
+                        SendTransactionOptions {
+                            provider: self.provider,
+                            mode: self.mode,
+                            request_id: Some(request_id.to_string()),
+                        },
+                    ))
+                    .context("Beam QUIC sendTransaction failed")?;
+                Ok(result.signature)
+            }
+            BeamQuicMethod::SendTransactionFast => {
+                let provider = self.provider.ok_or_else(|| {
+                    anyhow!("Beam QUIC sendTransactionFast requires beam_quic_provider")
+                })?;
+                self.runtime
+                    .block_on(self.client.send_versioned_transaction_fast(
+                        &versioned_tx,
+                        SendTransactionFastOptions {
+                            provider,
+                            mode: self.mode,
+                            request_id: Some(request_id.to_string()),
+                            signature: Some(signature.to_string()),
+                        },
+                    ))
+                    .context("Beam QUIC sendTransactionFast failed")?;
+                Ok(signature.to_string())
+            }
+        }
+    }
+}
+
+enum TransactionSender {
+    Http(PersistentRpcSender),
+    BeamQuic(BeamQuicSender),
+}
+
+impl TransactionSender {
+    fn new(config: &RuntimeConfig) -> Result<Self> {
+        match &config.send_target {
+            SendTargetConfig::Http => Ok(Self::Http(PersistentRpcSender::new(
+                config.send_tx_rpc_url.clone(),
+            )?)),
+            SendTargetConfig::BeamQuic(beam_config) => {
+                Ok(Self::BeamQuic(BeamQuicSender::new(beam_config.clone())?))
+            }
+        }
+    }
+
+    fn send_transaction(&self, tx: &Transaction, signature: Signature) -> Result<String> {
+        match self {
+            Self::Http(sender) => sender.send_transaction(tx),
+            Self::BeamQuic(sender) => sender.send_transaction(tx, signature),
+        }
     }
 }
 
@@ -396,6 +573,7 @@ fn main() -> Result<()> {
                 provider_name: provider.name.clone(),
                 rpc_url: provider.rpc_url.clone(),
                 send_tx_rpc_url: provider.send_tx_rpc_url.clone(),
+                send_target: provider.send_target.clone(),
                 sender_pubkey: provider.sender_pubkey,
                 sender_private_key_path: provider.sender_private_key_path.clone(),
                 tip_accounts: provider.tip_accounts.clone(),
@@ -562,6 +740,7 @@ impl LoadedConfig {
                     .send_tx_rpc_url
                     .clone()
                     .unwrap_or_else(|| global.send_tx_rpc_url.clone()),
+                send_target: build_send_target_config(provider, global)?,
                 sender_pubkey: provider_sender_pubkey,
                 sender_private_key_path: provider_sender_private_key,
                 tip_accounts,
@@ -586,6 +765,150 @@ impl LoadedConfig {
     }
 }
 
+fn build_send_target_config(
+    provider: &ProviderConfig,
+    global: &GlobalConfig,
+) -> Result<SendTargetConfig> {
+    let transport = provider.send_transport.unwrap_or(global.send_transport);
+    match transport {
+        SendTransport::Http => Ok(SendTargetConfig::Http),
+        SendTransport::BeamQuic => {
+            let endpoint = provider
+                .beam_quic_endpoint
+                .clone()
+                .or_else(|| global.beam_quic_endpoint.clone())
+                .ok_or_else(|| {
+                    anyhow!(
+                        "provider '{}' uses send_transport='beam-quic' but beam_quic_endpoint is not set",
+                        provider.name
+                    )
+                })?;
+            let api_key = provider
+                .beam_quic_api_key
+                .clone()
+                .or_else(|| global.beam_quic_api_key.clone())
+                .ok_or_else(|| {
+                    anyhow!(
+                        "provider '{}' uses send_transport='beam-quic' but beam_quic_api_key is not set",
+                        provider.name
+                    )
+                })?;
+            let provider_name = provider
+                .beam_quic_provider
+                .as_deref()
+                .or(global.beam_quic_provider.as_deref());
+            let mode = provider
+                .beam_quic_mode
+                .as_deref()
+                .or(global.beam_quic_mode.as_deref())
+                .map(parse_beam_quic_mode)
+                .transpose()?
+                .unwrap_or(BeamRoutingMode::Fastest);
+            let method = provider
+                .beam_quic_method
+                .as_deref()
+                .or(global.beam_quic_method.as_deref())
+                .map(parse_beam_quic_method)
+                .transpose()?
+                .unwrap_or_default();
+            let parsed_provider = provider_name.map(parse_beam_quic_provider).transpose()?;
+            if matches!(method, BeamQuicMethod::SendTransactionFast) && parsed_provider.is_none() {
+                return Err(anyhow!(
+                    "provider '{}' uses beam_quic_method='sendTransactionFast' but beam_quic_provider is not set",
+                    provider.name
+                ));
+            }
+
+            Ok(SendTargetConfig::BeamQuic(BeamQuicRuntimeConfig {
+                endpoint,
+                api_key,
+                provider: parsed_provider,
+                mode,
+                method,
+                server_name: provider
+                    .beam_quic_server_name
+                    .clone()
+                    .or_else(|| global.beam_quic_server_name.clone()),
+                ca_cert_path: provider
+                    .beam_quic_ca_cert_path
+                    .clone()
+                    .or_else(|| global.beam_quic_ca_cert_path.clone()),
+                danger_accept_invalid_server_cert: provider
+                    .beam_quic_danger_accept_invalid_server_cert
+                    .or(global.beam_quic_danger_accept_invalid_server_cert)
+                    .unwrap_or(true),
+            }))
+        }
+    }
+}
+
+fn parse_beam_quic_provider(value: &str) -> Result<BeamProvider> {
+    match normalize_config_token(value).as_str() {
+        "bloxroute" => Ok(BeamProvider::Bloxroute),
+        "astralane" => Ok(BeamProvider::Astralane),
+        "nozomi" => Ok(BeamProvider::Nozomi),
+        "falcon" => Ok(BeamProvider::Falcon),
+        _ => Err(anyhow!(
+            "invalid beam_quic_provider '{}'; expected one of: astralane, bloxroute, falcon, nozomi",
+            value
+        )),
+    }
+}
+
+fn parse_beam_quic_mode(value: &str) -> Result<BeamRoutingMode> {
+    match normalize_config_token(value).as_str() {
+        "fastest" => Ok(BeamRoutingMode::Fastest),
+        "mevprotect" => Ok(BeamRoutingMode::MevProtect),
+        _ => Err(anyhow!(
+            "invalid beam_quic_mode '{}'; expected one of: fastest, mev-protect",
+            value
+        )),
+    }
+}
+
+fn parse_beam_quic_method(value: &str) -> Result<BeamQuicMethod> {
+    match normalize_config_token(value).as_str() {
+        "sendtransaction" => Ok(BeamQuicMethod::SendTransaction),
+        "sendtransactionfast" => Ok(BeamQuicMethod::SendTransactionFast),
+        _ => Err(anyhow!(
+            "invalid beam_quic_method '{}'; expected one of: sendTransaction, sendTransactionFast",
+            value
+        )),
+    }
+}
+
+fn normalize_config_token(value: &str) -> String {
+    value
+        .trim()
+        .chars()
+        .filter(|ch| *ch != '-' && *ch != '_')
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+async fn resolve_beam_quic_endpoint(endpoint: &str) -> Result<SocketAddr> {
+    if let Ok(addr) = endpoint.parse::<SocketAddr>() {
+        return Ok(addr);
+    }
+    tokio::net::lookup_host(endpoint)
+        .await
+        .with_context(|| format!("failed to resolve {}", endpoint))?
+        .next()
+        .ok_or_else(|| anyhow!("no addresses resolved for {}", endpoint))
+}
+
+fn infer_beam_quic_server_name(endpoint: &str) -> String {
+    if endpoint.parse::<SocketAddr>().is_ok() {
+        return "beam".to_string();
+    }
+    endpoint
+        .rsplit_once(':')
+        .map(|(host, _)| host)
+        .unwrap_or(endpoint)
+        .trim_matches(['[', ']'])
+        .to_string()
+}
+
 struct ProviderRunner {
     sender: Keypair,
     blockhash: Arc<RwLock<Hash>>,
@@ -595,10 +918,8 @@ struct ProviderRunner {
 
 impl ProviderRunner {
     fn new(config: &RuntimeConfig) -> Result<Self> {
-        let rpc_client = RpcClient::new_with_commitment(
-            config.rpc_url.clone(),
-            CommitmentConfig::processed(),
-        );
+        let rpc_client =
+            RpcClient::new_with_commitment(config.rpc_url.clone(), CommitmentConfig::processed());
         let sender = read_sender_keypair(&config.sender_private_key_path, config.sender_pubkey)?;
 
         let (initial_hash, _) = rpc_client
@@ -615,11 +936,9 @@ impl ProviderRunner {
         let blockhash_thread = thread::Builder::new()
             .name(format!("blockhash-refresh-{}", provider_name))
             .spawn(move || {
-                let client =
-                    RpcClient::new_with_commitment(rpc_url, CommitmentConfig::processed());
+                let client = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::processed());
                 while !shutdown_clone.load(Ordering::Relaxed) {
-                    match client
-                        .get_latest_blockhash_with_commitment(CommitmentConfig::processed())
+                    match client.get_latest_blockhash_with_commitment(CommitmentConfig::processed())
                     {
                         Ok((hash, _)) => {
                             if let Ok(mut guard) = blockhash_clone.write() {
@@ -627,10 +946,7 @@ impl ProviderRunner {
                             }
                         }
                         Err(e) => {
-                            eprintln!(
-                                "[{}] blockhash refresh error: {}",
-                                provider_name, e
-                            );
+                            eprintln!("[{}] blockhash refresh error: {}", provider_name, e);
                         }
                     }
                     thread::sleep(BLOCKHASH_REFRESH_INTERVAL);
@@ -665,7 +981,7 @@ fn run_provider_benchmark(
     runs: usize,
     grpc: &GrpcTracker,
 ) -> Result<ProviderBenchmark> {
-    let send_tx_sender = PersistentRpcSender::new(config.send_tx_rpc_url.clone())?;
+    let send_tx_sender = TransactionSender::new(config)?;
     let runner = ProviderRunner::new(config)?;
 
     // Sequential per-provider dispatch gated by Aperture slot ticks: each run waits
@@ -714,14 +1030,7 @@ fn run_provider_benchmark(
             runs,
             triggered_slot
         );
-        let result = match run_transfer(
-            config,
-            &send_tx_sender,
-            grpc,
-            &runner,
-            i,
-            triggered_slot,
-        ) {
+        let result = match run_transfer(config, &send_tx_sender, grpc, &runner, i, triggered_slot) {
             Ok(result) => result,
             Err(err) => {
                 let err_msg = format!("{:#}", err);
@@ -768,7 +1077,7 @@ fn run_provider_benchmark(
 
 fn run_transfer(
     config: &RuntimeConfig,
-    send_tx_sender: &PersistentRpcSender,
+    send_tx_sender: &TransactionSender,
     grpc: &GrpcTracker,
     runner: &ProviderRunner,
     run_idx: usize,
@@ -826,7 +1135,7 @@ fn run_transfer(
     let submit_wall = SystemTime::now();
     let pending = grpc.register(signature.to_string(), submit_wall);
     let submit_slot = grpc.current_slot();
-    let signature_str = send_tx_sender.send_transaction(&tx)?;
+    let signature_str = send_tx_sender.send_transaction(&tx, signature)?;
     let send_ack_ms = submit_started.elapsed().as_secs_f64() * 1000.0;
     let returned_signature = Signature::from_str(&signature_str)
         .context("invalid signature in sendTransaction result")?;
@@ -1020,10 +1329,7 @@ fn resolve_selected_providers(
     }
 }
 
-fn preflight_balance_check(
-    providers: &[ProviderRuntime],
-    runs_per_provider: usize,
-) -> Result<()> {
+fn preflight_balance_check(providers: &[ProviderRuntime], runs_per_provider: usize) -> Result<()> {
     let mut required_by_sender: HashMap<Pubkey, u64> = HashMap::new();
     let mut rpc_for_sender: HashMap<Pubkey, String> = HashMap::new();
     let mut providers_per_sender: HashMap<Pubkey, Vec<String>> = HashMap::new();
@@ -1035,7 +1341,9 @@ fn preflight_balance_check(
             provider.tip_amount.saturating_add(SOL_FEE_BUFFER_LAMPORTS)
         };
         let total = per_run.saturating_mul(runs_per_provider as u64);
-        let entry = required_by_sender.entry(provider.sender_pubkey).or_insert(0);
+        let entry = required_by_sender
+            .entry(provider.sender_pubkey)
+            .or_insert(0);
         *entry = entry.saturating_add(total);
         rpc_for_sender
             .entry(provider.sender_pubkey)
@@ -1050,8 +1358,7 @@ fn preflight_balance_check(
         let rpc_url = rpc_for_sender
             .get(sender)
             .expect("rpc url recorded for sender");
-        let client =
-            RpcClient::new_with_commitment(rpc_url.clone(), CommitmentConfig::processed());
+        let client = RpcClient::new_with_commitment(rpc_url.clone(), CommitmentConfig::processed());
         let balance = client
             .get_balance(sender)
             .with_context(|| format!("failed to fetch SOL balance for sender {}", sender))?;

@@ -11,20 +11,19 @@ use tokio::runtime::Runtime;
 use yellowstone_grpc_client::{ClientTlsConfig, GeyserGrpcClient};
 use yellowstone_grpc_proto::prelude::{
     CommitmentLevel, SlotStatus, SubscribeRequest, SubscribeRequestFilterBlocks,
-    SubscribeRequestFilterSlots, SubscribeRequestFilterTransactions,
-    SubscribeRequestPing, subscribe_update::UpdateOneof,
+    SubscribeRequestFilterSlots, SubscribeRequestFilterTransactions, SubscribeRequestPing,
+    subscribe_update::UpdateOneof,
 };
 
 #[derive(Clone, Copy, Debug)]
 enum SubscriberRole {
-    /// Single-endpoint mode: slots + transactions + blocks.
-    All,
-    /// Primary endpoint when a separate tracking endpoint is configured: blocks only
-    /// (used solely for index-in-block resolution, since Aperture doesn't expose blocks).
+    /// Slot ticks only. The status differs by source: vanilla Yellowstone uses
+    /// SlotProcessed while Aperture tracking uses SlotFirstShredReceived.
+    Slots { advance_on: i32 },
+    /// Transaction landing events only.
+    Transactions,
+    /// Blocks only, used for index-in-block resolution.
     BlocksOnly,
-    /// Dedicated tracking endpoint (e.g. rpcfast Aperture): slots + transactions
-    /// (Aperture is ~30-40ms faster than vanilla Yellowstone for both).
-    SlotsAndTransactions,
 }
 
 #[derive(Debug, Clone)]
@@ -76,8 +75,7 @@ impl GrpcTracker {
     ) -> Result<Self> {
         let pending: Arc<Mutex<HashMap<String, PendingEntry>>> =
             Arc::new(Mutex::new(HashMap::new()));
-        let slot_state: Arc<(Mutex<u64>, Condvar)> =
-            Arc::new((Mutex::new(0), Condvar::new()));
+        let slot_state: Arc<(Mutex<u64>, Condvar)> = Arc::new((Mutex::new(0), Condvar::new()));
 
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -86,52 +84,72 @@ impl GrpcTracker {
             .build()
             .context("failed to build tokio runtime for grpc tracker")?;
 
-        let primary_role = if tracking_endpoint.is_some() {
-            SubscriberRole::BlocksOnly
-        } else {
-            SubscriberRole::All
+        let (tracking_endpoint, tracking_x_token, slot_advance_on) = match tracking_endpoint {
+            Some(endpoint) => (
+                endpoint,
+                tracking_x_token,
+                SlotStatus::SlotFirstShredReceived as i32,
+            ),
+            None => (
+                primary_endpoint.clone(),
+                primary_x_token.clone(),
+                SlotStatus::SlotProcessed as i32,
+            ),
         };
 
-        let (primary_ready_tx, primary_ready_rx) = mpsc::channel::<Result<()>>();
+        let (blocks_ready_tx, blocks_ready_rx) = mpsc::channel::<Result<()>>();
         spawn_subscriber(
             &runtime,
-            "primary",
+            "blocks",
             primary_endpoint,
             primary_x_token,
             sender_pubkeys.clone(),
             Arc::clone(&pending),
             Arc::clone(&slot_state),
-            primary_ready_tx,
-            primary_role,
+            blocks_ready_tx,
+            SubscriberRole::BlocksOnly,
         );
 
-        let tracking_ready_rx = if let Some(track_endpoint) = tracking_endpoint {
-            let (tx, rx) = mpsc::channel::<Result<()>>();
-            spawn_subscriber(
-                &runtime,
-                "tracking",
-                track_endpoint,
-                tracking_x_token,
-                sender_pubkeys,
-                Arc::clone(&pending),
-                Arc::clone(&slot_state),
-                tx,
-                SubscriberRole::SlotsAndTransactions,
-            );
-            Some(rx)
-        } else {
-            None
-        };
+        let (slots_ready_tx, slots_ready_rx) = mpsc::channel::<Result<()>>();
+        spawn_subscriber(
+            &runtime,
+            "slots",
+            tracking_endpoint.clone(),
+            tracking_x_token.clone(),
+            sender_pubkeys.clone(),
+            Arc::clone(&pending),
+            Arc::clone(&slot_state),
+            slots_ready_tx,
+            SubscriberRole::Slots {
+                advance_on: slot_advance_on,
+            },
+        );
 
-        primary_ready_rx
+        let (transactions_ready_tx, transactions_ready_rx) = mpsc::channel::<Result<()>>();
+        spawn_subscriber(
+            &runtime,
+            "transactions",
+            tracking_endpoint,
+            tracking_x_token,
+            sender_pubkeys,
+            Arc::clone(&pending),
+            Arc::clone(&slot_state),
+            transactions_ready_tx,
+            SubscriberRole::Transactions,
+        );
+
+        blocks_ready_rx
             .recv_timeout(Duration::from_secs(20))
-            .map_err(|_| anyhow!("timed out waiting for primary grpc subscriber to start"))?
-            .context("primary grpc subscriber failed to start")?;
-        if let Some(rx) = tracking_ready_rx {
-            rx.recv_timeout(Duration::from_secs(20))
-                .map_err(|_| anyhow!("timed out waiting for tracking grpc subscriber to start"))?
-                .context("tracking grpc subscriber failed to start")?;
-        }
+            .map_err(|_| anyhow!("timed out waiting for blocks grpc subscriber to start"))?
+            .context("blocks grpc subscriber failed to start")?;
+        slots_ready_rx
+            .recv_timeout(Duration::from_secs(20))
+            .map_err(|_| anyhow!("timed out waiting for slots grpc subscriber to start"))?
+            .context("slots grpc subscriber failed to start")?;
+        transactions_ready_rx
+            .recv_timeout(Duration::from_secs(20))
+            .map_err(|_| anyhow!("timed out waiting for transactions grpc subscriber to start"))?
+            .context("transactions grpc subscriber failed to start")?;
 
         Ok(Self {
             pending,
@@ -259,15 +277,9 @@ async fn run_subscriber(
         }
     };
 
-    let want_transactions = matches!(
-        role,
-        SubscriberRole::All | SubscriberRole::SlotsAndTransactions
-    );
-    let want_blocks = matches!(role, SubscriberRole::All | SubscriberRole::BlocksOnly);
-    let want_slots = matches!(
-        role,
-        SubscriberRole::All | SubscriberRole::SlotsAndTransactions
-    );
+    let want_transactions = matches!(role, SubscriberRole::Transactions);
+    let want_blocks = matches!(role, SubscriberRole::BlocksOnly);
+    let want_slots = matches!(role, SubscriberRole::Slots { .. });
 
     // Aperture only emits SlotFirstShredReceived and SlotCompleted and ignores
     // both `filter_by_commitment` and `interslot_updates`, so for the tracking
@@ -275,10 +287,9 @@ async fn run_subscriber(
     // because it's the earliest signal the next leader has started producing —
     // matching the dispatch loop's intent of landing near the front of the
     // upcoming block. Vanilla Yellowstone still gates on SlotProcessed.
-    let advance_on: i32 = match role {
-        SubscriberRole::All => SlotStatus::SlotProcessed as i32,
-        SubscriberRole::SlotsAndTransactions => SlotStatus::SlotFirstShredReceived as i32,
-        SubscriberRole::BlocksOnly => SlotStatus::SlotProcessed as i32,
+    let advance_on: Option<i32> = match role {
+        SubscriberRole::Slots { advance_on } => Some(advance_on),
+        SubscriberRole::Transactions | SubscriberRole::BlocksOnly => None,
     };
 
     let mut transactions_filter = HashMap::new();
@@ -332,10 +343,16 @@ async fn run_subscriber(
         ..Default::default()
     };
 
-    let (mut subscribe_tx, mut stream) = match client.subscribe_with_request(Some(request)).await {
-        Ok(pair) => pair,
+    let (mut subscribe_tx, subscribe_rx) = futures::channel::mpsc::channel(1000);
+    subscribe_tx
+        .send(request)
+        .await
+        .context("failed to send initial subscribe request")?;
+
+    let mut stream = match client.geyser.subscribe(subscribe_rx).await {
+        Ok(response) => response.into_inner(),
         Err(e) => {
-            let err = anyhow!("subscribe_with_request failed: {}", e);
+            let err = anyhow!("subscribe failed: {}", e);
             let _ = ready_tx.send(Err(anyhow!("{:#}", err)));
             return Err(err);
         }
@@ -354,6 +371,11 @@ async fn run_subscriber(
         let update = match message {
             Ok(u) => u,
             Err(e) => {
+                if !ready_signaled {
+                    let err = anyhow!("grpc stream error before subscriber ready: {}", e);
+                    let _ = ready_tx.send(Err(anyhow!("{:#}", err)));
+                    return Err(err);
+                }
                 eprintln!("[grpc-tracker] stream error: {}", e);
                 continue;
             }
@@ -363,7 +385,7 @@ async fn run_subscriber(
 
         match update.update_oneof {
             Some(UpdateOneof::Slot(slot_update)) => {
-                if slot_update.status == advance_on {
+                if Some(slot_update.status) == advance_on {
                     let (m, cv) = &*slot_state;
                     {
                         let mut guard = m.lock().expect("slot lock poisoned");

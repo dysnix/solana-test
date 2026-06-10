@@ -16,9 +16,11 @@ For each provider you configure, the benchmark:
 1. Connects to a gRPC endpoint and waits for the slot stream to come online.
 2. Verifies sender SOL balance up-front (fail-fast across all selected providers).
 3. Dispatches one signed transaction **per gRPC slot tick** to a provider's
-   `sendTransaction` URL — any Yellowstone-compatible gRPC endpoint works as
-   the slot source. Aligning every send with a fresh slot edge gives us the
-   best-case landing position to measure.
+   configured send target: HTTP JSON-RPC `sendTransaction` by default, or a
+   Beam QUIC endpoint when `send_transport = "beam-quic"`. Any
+   Yellowstone-compatible gRPC endpoint works as the slot source. Aligning
+   every send with a fresh slot edge gives us the best-case landing position
+   to measure.
 4. Waits for the gRPC Transaction event for that signature, plus the Block
    event from the blocks subscription which records the tx's index in the
    block.
@@ -65,30 +67,36 @@ overlaps.
                           (kept-alive, multiplexed)
 ```
 
-- One `GrpcTracker` is shared across all providers. It opens up to two
-  Yellowstone-compatible subscriptions: one carrying slot ticks and
-  transaction landings (the latency-critical streams), and one carrying
-  blocks (used to recover each tx's index inside its block).
+- One `GrpcTracker` is shared across all providers. It opens three
+  Yellowstone-compatible subscriptions: one for slot ticks, one for
+  transaction landings, and one for blocks (used to recover each tx's index
+  inside its block). Keeping one filter type per subscription stays within
+  Yellowstone deployments configured with `filter_limits.*.max = 1`.
 - The slots subscriber notifies a `Condvar`; every provider thread wakes on
   each slot tick and dispatches concurrently.
-- Optionally, the slots+transactions stream can be offloaded to a faster
+- Optionally, the slots and transactions subscriptions can be offloaded to a faster
   endpoint (e.g. rpcfast Aperture, ~30–40 ms ahead of vanilla Yellowstone
   since it decodes from shreds), with the primary endpoint serving only
-  blocks for index-in-block resolution. Without that override, a single
-  Yellowstone endpoint carries all three filters.
+  blocks for index-in-block resolution. Without that override, all three
+  subscriptions connect to the same Yellowstone endpoint.
 - Which slot status wakes the dispatch loop depends on the role:
-  - **Single-endpoint mode** (no `grpc_tracking_url`): the unified subscriber
+  - **Single-endpoint mode** (no `grpc_tracking_url`): the slots subscriber
     triggers on `SlotProcessed`.
-  - **Split-endpoint mode**: the tracking subscriber triggers on
+  - **Split-endpoint mode**: the tracking slots subscriber triggers on
     `SlotFirstShredReceived` — the earliest signal that the next leader has
     started producing the upcoming block. This matches Aperture's behavior
     (it only emits `SlotFirstShredReceived` + `SlotCompleted` and ignores
     both `filter_by_commitment` and `interslot_updates`), and gives the
     dispatch loop the earliest possible slot edge to fire on. The primary
     (blocks-only) subscriber still uses `SlotProcessed`.
-- `sendTransaction` POSTs reuse a single HTTP/2 connection per provider
-  (negotiated via ALPN with rustls). The blockhash is refreshed in a
-  background thread every 400 ms so signing never blocks on RPC.
+- HTTP `sendTransaction` POSTs reuse a single HTTP/2 connection per provider
+  (negotiated via ALPN with rustls). Beam QUIC providers reuse one QUIC client
+  per provider thread and can use either `sendTransaction` or
+  `sendTransactionFast`. The fast method uses Beam's unidirectional QUIC path,
+  sends the locally precomputed transaction signature in the QUIC header, and
+  records that local signature because Beam does not return a response. The
+  blockhash is refreshed in a background thread every 400 ms so signing never
+  blocks on RPC.
 
 ## Prerequisites
 
@@ -129,8 +137,21 @@ compute_unit_price_micro_lamports = 100_000
 # Default RPC URL for blockhash refresh + balance checks.
 rpc_url = "https://solana-rpc.example.com/?api_key=..."
 
-# Default sendTransaction URL (used by providers that don't override).
+# Default sendTransaction URL (used by HTTP providers that don't override).
 send_tx_rpc_url = "https://beam.rpcfast.com/?api_key=..."
+
+# Default send transport is "http". Set "beam-quic" globally or per provider
+# to send through Beam's QUIC submit endpoint instead of JSON-RPC.
+# send_transport = "beam-quic"
+# beam_quic_endpoint = "beam.rpcfast.com:9898"
+# beam_quic_api_key = "<Beam API key>"
+# beam_quic_provider = "astralane" # astralane | bloxroute | falcon | nozomi
+# beam_quic_method = "sendTransaction" # sendTransaction | sendTransactionFast
+# beam_quic_mode = "fastest"       # fastest | mev-protect
+# Optional TLS knobs:
+# beam_quic_server_name = "beam.rpcfast.com"
+# beam_quic_ca_cert_path = "ca.pem"
+# beam_quic_danger_accept_invalid_server_cert = false
 
 # Primary gRPC endpoint. With grpc_tracking_url unset it carries
 # slots + transactions + blocks. With it set, this endpoint serves
@@ -163,6 +184,23 @@ sender_private_key = "providerA_sender_pk.json"
 # tip_amount = 1_500_000
 # compute_unit_limit = 100_000
 # compute_unit_price_micro_lamports = 200_000
+```
+
+Beam QUIC provider example:
+
+```toml
+[[provider]]
+name = "rpcfast-astralane-quic"
+send_transport = "beam-quic"
+beam_quic_endpoint = "beam.rpcfast.com:9898"
+beam_quic_api_key = "<Beam API key>"
+beam_quic_provider = "astralane"
+beam_quic_method = "sendTransactionFast"
+beam_quic_mode = "fastest"
+tip_accounts = [
+  "ASdXviZw2kbViFuAgZF26RPZL1HdybUoWdcveG2nfU8D",
+  "Ax2JBnTPUpBFWe75z3YtgueWUfvZPZ6ZFXiMWJMUnjbo",
+]
 ```
 
 ### Sender isolation
@@ -305,7 +343,7 @@ Writes both:
 | `landed_index_in_block` | Position in the block (lower is closer to the front). |
 | `submit_to_landed_slots` | `landed_slot - submit_slot`. `0` ≈ same-slot landing. |
 | `same_slot_landed` | Bool shortcut for `submit_to_landed_slots == 0`. |
-| `send_ack_ms` | HTTP RTT for the `sendTransaction` POST (ms). |
+| `send_ack_ms` | Send-target acknowledgement latency for HTTP JSON-RPC or Beam QUIC submission (ms). |
 | `submit_to_landed_ms` | Local clock from POST start to gRPC tx event arrival. |
 | `submit_to_landed_grpc_ms` | gRPC `created_at` minus our wall-clock POST time. Should agree with `submit_to_landed_ms` ± a few ms. |
 | `submit_to_block_received_ms` | Time until the block containing this tx was streamed (from primary gRPC). |
@@ -323,9 +361,9 @@ Writes both:
 - **`landed_index_in_block`** measures the leader's ordering. Lower is
   better; if you see a provider consistently in the first ~50 entries the
   relay is actively prioritizing your tx.
-- **`send_ack_ms`** is purely the HTTP RTT — it is **not** included in
-  `submit_to_landed_ms` correctness, but a high `send_ack_ms` (>50ms) hints
-  at network distance to the relay.
+- **`send_ack_ms`** is purely the send-target acknowledgement latency — it is
+  **not** included in `submit_to_landed_ms` correctness, but a high
+  `send_ack_ms` (>50ms) hints at network distance to the relay.
 - **`submit_to_landed_ms` < 30 ms is suspicious** — network RTT alone is
   usually >30 ms. If you see this consistently, raise an issue.
 

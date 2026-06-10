@@ -11,6 +11,18 @@ compute_unit_price_micro_lamports = 100000
 # rpc_url is used for regular RPC calls, send_tx_rpc_url is used for sending transactions only.
 rpc_url = "https://solana-rpc.rpcfast.com/?api_key="
 send_tx_rpc_url = "https://beam.rpcfast.com/?api_key="
+# send_transport defaults to "http". Set "beam-quic" globally or per provider
+# to submit through the Beam QUIC endpoint instead of JSON-RPC sendTransaction.
+# send_transport = "beam-quic"
+# beam_quic_endpoint = "beam.rpcfast.com:9898"
+# beam_quic_api_key = "your-api-key-here"
+# beam_quic_method = "sendTransaction" # sendTransaction | sendTransactionFast
+# beam_quic_mode = "fastest" # fastest | mev-protect
+# Optional TLS knobs. By default the client accepts invalid server certs to
+# match the local/self-signed Beam QUIC example client.
+# beam_quic_server_name = "beam.rpcfast.com"
+# beam_quic_ca_cert_path = "ca.pem"
+# beam_quic_danger_accept_invalid_server_cert = false
 # Primary gRPC endpoint. When grpc_tracking_url is unset it carries slots,
 # transactions and blocks; when set it carries blocks only (since Aperture does
 # not expose a blocks subscription).
@@ -34,6 +46,19 @@ name = "rpcfast-astralane"
 # sender_pubkey = "..."
 # sender_private_key = "provider_sender_pk.json"
 send_tx_rpc_url = "https://beam.rpcfast.com/?provider=astralane&mode=fastest&api_key="
+tip_accounts = [
+  "ASdXviZw2kbViFuAgZF26RPZL1HdybUoWdcveG2nfU8D",
+  "Ax2JBnTPUpBFWe75z3YtgueWUfvZPZ6ZFXiMWJMUnjbo",
+]
+
+[[provider]]
+name = "rpcfast-astralane-quic"
+send_transport = "beam-quic"
+beam_quic_endpoint = "beam.rpcfast.com:9898"
+beam_quic_api_key = "your-api-key-here"
+beam_quic_provider = "astralane"
+beam_quic_method = "sendTransactionFast"
+beam_quic_mode = "fastest"
 tip_accounts = [
   "ASdXviZw2kbViFuAgZF26RPZL1HdybUoWdcveG2nfU8D",
   "Ax2JBnTPUpBFWe75z3YtgueWUfvZPZ6ZFXiMWJMUnjbo",
