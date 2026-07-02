@@ -316,6 +316,7 @@ async fn run_subscriber(
                 include_transactions: Some(true),
                 include_accounts: Some(false),
                 include_entries: Some(false),
+                cuckoo_account_include: None,
             },
         );
     }
