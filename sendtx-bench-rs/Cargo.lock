@@ -455,9 +455,9 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
 name = "beam-quic-client"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "268bec2680022ee2e637040438fe31d112bf89d7e9d59f836d425a11dd519bd7"
+checksum = "c42d0ab5e7e09e45827ec859f72b8cad27b4b71fad0190aaca0a825de3172227"
 dependencies = [
  "base64 0.22.1",
  "beam-quic-protocol",
