@@ -36,7 +36,10 @@ export class ResultsReporter {
     console.log(`Total Requests:     ${results.totalRequests.toLocaleString()}`);
     console.log(`Successful:         ${results.successfulRequests.toLocaleString()}`);
     console.log(`Failed:             ${results.failedRequests.toLocaleString()}`);
-    console.log(`Success Rate:       ${((results.successfulRequests / results.totalRequests) * 100).toFixed(2)}%`);
+    const successRate = results.totalRequests > 0
+      ? (results.successfulRequests / results.totalRequests) * 100
+      : 0;
+    console.log(`Success Rate:       ${successRate.toFixed(2)}%`);
     console.log(`Max RPS Achieved:   ${results.maxRps.toFixed(2)}`);
     console.log(`Actual RPS:         ${results.actualRps.toFixed(2)}`);
     console.log(`Test Duration:      ${results.testDuration.toFixed(2)}s`);
@@ -154,7 +157,9 @@ export class ResultsReporter {
     const throughput = results.testDuration > 0
       ? results.successfulRequests / results.testDuration
       : 0;
-    const errorRate = (results.failedRequests / results.totalRequests) * 100;
+    const errorRate = results.totalRequests > 0
+      ? (results.failedRequests / results.totalRequests) * 100
+      : 0;
     
     this.logger.info(`Throughput:         ${throughput.toFixed(2)} req/s`);
     this.logger.info(`Error Rate:         ${errorRate.toFixed(2)}%`);

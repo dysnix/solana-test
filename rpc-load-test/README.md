@@ -36,3 +36,5 @@ npm run start -- \
 --concurrent 80 \
 --progress
 ```
+
+Pressing `Ctrl+C` (or sending `SIGTERM`) stops scheduling requests, waits for in-flight workers, and prints the results captured before the interruption. Configured JSON or CSV exports are also written before the process exits. A second signal forces immediate shutdown.

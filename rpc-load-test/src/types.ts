@@ -39,6 +39,8 @@ export interface LoadTestConfig {
   rps: number; // requests per second
   concurrent: number;
   methods: string[];
+  /** RPC methods removed from the explicit or default method selection. */
+  methodExclude?: string[];
   timeout: number; // milliseconds
   healthCheckInterval?: number;
   healthMonitoring?: boolean;

@@ -38,6 +38,9 @@ program
 program.parse();
 
 const options = program.opts();
+let activeLoadTester: SolanaRpcLoadTester | null = null;
+let interruptedSignal: NodeJS.Signals | null = null;
+let shutdownPromise: Promise<void> | null = null;
 
 async function main() {
   try {
@@ -61,6 +64,7 @@ async function main() {
       concurrent: parseInt(options.concurrent),
       timeout: parseInt(options.timeout),
       methods: includedMethods,
+      methodExclude: excludedMethods,
       healthCheckInterval: parseInt(options.healthCheckInterval),
       healthCheck: !options.skipHealthCheck,
       progress: options.progress,
@@ -77,26 +81,16 @@ async function main() {
       rawExcludedMethods: options.methodExclude,
       parsedMethods: config.methods,
       parsedExcludedMethods: excludedMethods,
-      methodsLength: config.methods?.length 
+      methodsLength: config.methods?.length
     });
 
-    // Validate methods
     try {
-      const validIncludedMethods = ConfigValidator.validateMethods(config.methods || []);
-      const validExcludedMethods = ConfigValidator.validateMethods(excludedMethods);
-      const defaultMethods = ConfigValidator.getDefaultMethods();
-
-      const baseMethods = validIncludedMethods.length > 0 ? validIncludedMethods : defaultMethods;
-      config.methods = baseMethods.filter(method => !validExcludedMethods.includes(method));
-
-      if (config.methods.length === 0) {
-        throw new Error('Method selection is empty after applying exclusions. Remove some methods from --method-exclude.');
-      }
+      config.methods = ConfigValidator.resolveMethods(config.methods || [], excludedMethods);
 
       logger.debug('Methods after validation', {
         methods: config.methods,
         originalMethods: options.methods,
-        excludedMethods: validExcludedMethods,
+        excludedMethods,
       });
     } catch (error) {
       logger.error('Method validation failed', { error: error instanceof Error ? error.message : String(error) });
@@ -121,9 +115,11 @@ async function main() {
 
     // Create and run load tester
     const loadTester = new SolanaRpcLoadTester(config);
+    activeLoadTester = loadTester;
 
     logger.info('🚀 Starting load test...');
     const results = await loadTester.run();
+    activeLoadTester = null;
 
     // Display results
     ResultsReporter.printResults(results);
@@ -134,8 +130,10 @@ async function main() {
     }
 
     // Exit with error code if there are too many failures
-    const errorRate = (results.failedRequests / results.totalRequests) * 100;
-    if (errorRate > 50) {
+    const errorRate = results.totalRequests > 0
+      ? (results.failedRequests / results.totalRequests) * 100
+      : 0;
+    if (!interruptedSignal && errorRate > 50) {
       logger.error('❌ High error rate detected. Consider checking your RPC endpoint.');
       process.exit(1);
     }
@@ -174,29 +172,34 @@ async function exportResults(results: any, options: any): Promise<void> {
   }
 }
 
-// Handle graceful shutdown
-process.on('SIGINT', async () => {
+async function handleShutdown(signal: NodeJS.Signals): Promise<void> {
   const logger = Logger.getInstance();
-  logger.warn('⚠️  Interrupted by user. Shutting down gracefully...');
-  
-  // TODO: Implement graceful shutdown for load tester
-  // if (loadTester && loadTester.isRunning) {
-  //   await loadTester.stop();
-  // }
-  
-  process.exit(0);
+  const exitCode = signal === 'SIGINT' ? 130 : 143;
+
+  if (shutdownPromise) {
+    logger.warn(`⚠️  Received ${signal} again. Forcing shutdown.`);
+    process.exit(exitCode);
+  }
+
+  interruptedSignal = signal;
+  process.exitCode = exitCode;
+  logger.warn(`⚠️  Received ${signal}. Shutting down gracefully and reporting captured results...`);
+
+  shutdownPromise = activeLoadTester?.stop() ?? Promise.resolve();
+  try {
+    await shutdownPromise;
+  } catch (error) {
+    logger.error('Graceful shutdown failed', { error: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+// Handle graceful shutdown
+process.on('SIGINT', () => {
+  void handleShutdown('SIGINT');
 });
 
-process.on('SIGTERM', async () => {
-  const logger = Logger.getInstance();
-  logger.warn('⚠️  Received SIGTERM. Shutting down gracefully...');
-  
-  // TODO: Implement graceful shutdown for load tester
-  // if (loadTester && loadTester.isRunning) {
-  //   await loadTester.stop();
-  // }
-  
-  process.exit(0);
+process.on('SIGTERM', () => {
+  void handleShutdown('SIGTERM');
 });
 
 // Handle unhandled promise rejections

@@ -11,6 +11,11 @@ export class ConfigValidator {
   static validate(config: Partial<LoadTestConfig>): LoadTestConfig {
     const validatedConfig = { ...this.DEFAULT_CONFIG, ...config };
 
+    validatedConfig.methods = this.resolveMethods(
+      validatedConfig.methods ?? [],
+      validatedConfig.methodExclude ?? [],
+    );
+
     // Validate required fields
     if (!validatedConfig.endpoint) {
       throw new Error('Endpoint URL is required');
@@ -127,6 +132,21 @@ export class ConfigValidator {
     const invalidMethods = methods.filter(method => !this.VALID_METHODS.includes(method));
     if (invalidMethods.length > 0) {
       throw new Error(`Invalid RPC methods: ${invalidMethods.join(', ')}. Valid methods: ${this.VALID_METHODS.join(', ')}`);
+    }
+
+    return methods;
+  }
+
+  static resolveMethods(includedMethods: string[], excludedMethods: string[]): string[] {
+    const validIncludedMethods = this.validateMethods(includedMethods);
+    const validExcludedMethods = this.validateMethods(excludedMethods);
+    const baseMethods = validIncludedMethods.length > 0
+      ? validIncludedMethods
+      : this.getDefaultMethods();
+    const methods = baseMethods.filter(method => !validExcludedMethods.includes(method));
+
+    if (methods.length === 0) {
+      throw new Error('Method selection is empty after applying exclusions. Remove some methods from --method-exclude.');
     }
 
     return methods;

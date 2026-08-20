@@ -20,11 +20,22 @@ export class SolanaRpcLoadTester {
   private healthCheckInterval: NodeJS.Timeout | null = null;
   private progressInterval: NodeJS.Timeout | null = null;
   private nextRequestSlotMs: number = 0;
+  private stopRequested: boolean = false;
+  private readonly stopRequestedPromise: Promise<void>;
+  private resolveStopRequested!: () => void;
+  private readonly shutdownCompletePromise: Promise<void>;
+  private resolveShutdownComplete!: () => void;
 
   constructor(config: Partial<LoadTestConfig>) {
     this.config = ConfigValidator.validate(config);
     this.rpcMethodGenerator = new RpcMethodGenerator(this.config);
     this.logger = Logger.getInstance();
+    this.stopRequestedPromise = new Promise(resolve => {
+      this.resolveStopRequested = resolve;
+    });
+    this.shutdownCompletePromise = new Promise(resolve => {
+      this.resolveShutdownComplete = resolve;
+    });
   }
 
   async run(): Promise<LoadTestResults> {
@@ -38,6 +49,13 @@ export class SolanaRpcLoadTester {
       } else {
         this.logger.info('Health check disabled — skipping pre-run probe');
       }
+
+      if (this.stopRequested) {
+        this.startTime = Date.now();
+        this.endTime = this.startTime;
+        return this.calculateResults();
+      }
+
       await this.startLoadTest();
       await this.waitForCompletion();
       return this.calculateResults();
@@ -45,13 +63,21 @@ export class SolanaRpcLoadTester {
       this.logger.error('Load test failed', { error: error instanceof Error ? error.message : String(error) });
       throw error;
     } finally {
-      await this.cleanup();
+      try {
+        await this.cleanup();
+      } finally {
+        this.resolveShutdownComplete();
+      }
     }
   }
 
   private async performHealthCheck(): Promise<void> {
     this.logger.info('Performing health check...');
     const healthResult = await this.healthCheck();
+
+    if (this.stopRequested) {
+      return;
+    }
     
     if (!healthResult.isHealthy) {
       throw new Error(`Endpoint health check failed: ${healthResult.error}`);
@@ -83,6 +109,10 @@ export class SolanaRpcLoadTester {
     await this.rpcMethodGenerator.waitForInitialization();
     this.logger.debug('RPC method generator initialized');
 
+    if (this.stopRequested) {
+      return;
+    }
+
     this.logger.debug('Load test methods configuration', { 
       methods: this.config.methods, 
       methodsCount: this.config.methods.length,
@@ -110,11 +140,21 @@ export class SolanaRpcLoadTester {
   }
 
   private async waitForCompletion(): Promise<void> {
-    
-    // Wait for duration
-    await new Promise(resolve => setTimeout(resolve, this.config.duration * 1000));
-    
-    this.logger.info('🛑 Duration completed, initiating graceful shutdown...');
+    let durationTimer: NodeJS.Timeout | undefined;
+    const durationCompleted = new Promise<void>(resolve => {
+      durationTimer = setTimeout(resolve, this.config.duration * 1000);
+    });
+
+    await Promise.race([durationCompleted, this.stopRequestedPromise]);
+
+    if (durationTimer) {
+      clearTimeout(durationTimer);
+    }
+
+    if (!this.stopRequested) {
+      this.logger.info('🛑 Duration completed, initiating graceful shutdown...');
+    }
+
     this.isShuttingDown = true;
     this.isRunning = false;
 
@@ -136,6 +176,7 @@ export class SolanaRpcLoadTester {
     if (this.progressInterval) {
       clearInterval(this.progressInterval);
       this.progressInterval = null;
+      this.logger.clearProgress();
     }
 
     await this.rpcMethodGenerator.cleanup();
@@ -189,6 +230,10 @@ export class SolanaRpcLoadTester {
         try {
           const method = await this.selectRandomMethod();
           const result = await this.makeRequest(method, workerId);
+
+          if (!result) {
+            break;
+          }
           
           this.results.push(result);
           requestsProcessed++;
@@ -244,7 +289,11 @@ export class SolanaRpcLoadTester {
     }
   }
 
-  private async acquireRequestSlot(): Promise<void> {
+  private async acquireRequestSlot(): Promise<boolean> {
+    if (this.stopRequested) {
+      return false;
+    }
+
     const now = Date.now();
     const minIntervalMs = 1000 / this.config.rps;
     const scheduledAt = Math.max(now, this.nextRequestSlotMs);
@@ -252,8 +301,18 @@ export class SolanaRpcLoadTester {
 
     const waitMs = scheduledAt - now;
     if (waitMs > 0) {
-      await new Promise(resolve => setTimeout(resolve, waitMs));
+      let waitTimer: NodeJS.Timeout | undefined;
+      const requestSlotAvailable = new Promise<void>(resolve => {
+        waitTimer = setTimeout(resolve, waitMs);
+      });
+      await Promise.race([requestSlotAvailable, this.stopRequestedPromise]);
+
+      if (waitTimer) {
+        clearTimeout(waitTimer);
+      }
     }
+
+    return !this.stopRequested;
   }
 
   private async selectRandomMethod(): Promise<RpcRequest> {
@@ -304,8 +363,11 @@ export class SolanaRpcLoadTester {
     }
   }
 
-  private async makeRequest(request: RpcRequest, workerId: number, attempt: number = 1): Promise<TestResult> {
-    await this.acquireRequestSlot();
+  private async makeRequest(request: RpcRequest, workerId: number, attempt: number = 1): Promise<TestResult | null> {
+    if (!await this.acquireRequestSlot()) {
+      return null;
+    }
+
     const startTime = Date.now();
     
     this.logger.debug(`Sending ${request.method} request`, { 
@@ -497,9 +559,9 @@ export class SolanaRpcLoadTester {
       methodResults.get(result.method)!.push(result);
     });
 
-    const actualDuration = (this.endTime - this.startTime) / 1000;
-    const maxRps = this.requestCount / actualDuration;
-    const actualRps = this.results.length / actualDuration;
+    const actualDuration = Math.max(0, (this.endTime - this.startTime) / 1000);
+    const maxRps = actualDuration > 0 ? this.requestCount / actualDuration : 0;
+    const actualRps = actualDuration > 0 ? this.results.length / actualDuration : 0;
 
     return {
       totalRequests: this.results.length,
@@ -531,15 +593,14 @@ export class SolanaRpcLoadTester {
   }
 
   async stop(): Promise<void> {
-    this.logger.info('🛑 Stopping load test...');
+    if (!this.stopRequested) {
+      this.logger.info('🛑 Stopping load test...');
+      this.stopRequested = true;
+      this.resolveStopRequested();
+    }
+
     this.isShuttingDown = true;
     this.isRunning = false;
-    
-    // Wait for workers to finish
-    const workerPromises = Array.from(this.workers.values());
-    await Promise.allSettled(workerPromises);
-    
-    this.endTime = Date.now();
-    await this.cleanup();
+    await this.shutdownCompletePromise;
   }
 }
