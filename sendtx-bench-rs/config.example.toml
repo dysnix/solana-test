@@ -1,7 +1,3 @@
-[[sender]]
-pubkey = ""
-private_key = "sender_pk.json"
-
 [[global]]
 tip_amount = 1000000
 # Compute budget for the benchmarked transfer (transfer + memo + tip ix).
@@ -47,10 +43,8 @@ name = "rpcfast-astralane"
 # tip_amount = 1500000
 # compute_unit_limit = 12000
 # compute_unit_price_micro_lamports = 200000
-# Optional sender override for parallel provider isolation.
-# Set both fields together when overriding:
-# sender_pubkey = "..."
-# sender_private_key = "provider_sender_pk.json"
+# Sender keypair defaults to wallets/<provider name>.json.
+# sender_private_key = "wallets/alternate.json"
 send_tx_rpc_url = "https://beam.rpcfast.com/?provider=astralane&mode=fastest&api_key="
 tip_accounts = [
   "ASdXviZw2kbViFuAgZF26RPZL1HdybUoWdcveG2nfU8D",

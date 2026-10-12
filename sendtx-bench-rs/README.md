@@ -120,10 +120,6 @@ The benchmark reads a TOML file (default `config.toml`). Start by copying
 pubkey = "<receiver pubkey>"
 private_key = "receiver_pk.json"   # only the pubkey is actually used
 
-[[sender]]
-pubkey = "<default sender pubkey>"
-private_key = "sender_pk.json"     # JSON-array keypair file (Solana CLI format)
-
 [[global]]
 # Default tip in lamports (relay providers). For pure RPC paths, can be 0
 # but you still need the tip_accounts entry empty.
@@ -178,10 +174,8 @@ tip_accounts = [
   "BBtip8kpHzYPD2hhrcwV6P2stL7GRqxpiVkHBomSMrVB",
   "BBtiphcAHYAYUrurxjtJQaiswFnvrWZU3sRu7X3NGzfU",
 ]
-# Recommended: dedicated sender per provider for safe parallel benchmarking.
-# Both fields must be set together.
-sender_pubkey = "<provider-A sender pubkey>"
-sender_private_key = "providerA_sender_pk.json"
+# Sender keypair defaults to wallets/rpcfast-astralane.json.
+# sender_private_key = "wallets/alternate.json"  # optional override
 
 # Optional per-provider overrides for global defaults:
 # rpc_url = "..."
@@ -219,22 +213,26 @@ tip_accounts = [
 
 When benchmarking multiple providers in parallel they all submit transactions
 on the same chain; if they share a fee-payer the parallel submissions will
-contend on the same nonce/account state and serialize behind each other. The
-recommended pattern is **one sender keypair per provider**, set explicitly:
+contend on the same nonce/account state and serialize behind each other. Each
+provider uses `wallets/<name>.json` by default, relative to the config file:
 
 ```toml
 [[provider]]
 name = "rpcfast-astralane"
-sender_pubkey = "<sender A pubkey>"
-sender_private_key = "senderA_pk.json"
+# Uses wallets/rpcfast-astralane.json
 …
 
 [[provider]]
 name = "rpcfast-bloxroute"
-sender_pubkey = "<sender B pubkey>"
-sender_private_key = "senderB_pk.json"
+# Uses wallets/rpcfast-bloxroute.json
 …
 ```
+
+The benchmark derives each sender pubkey from its JSON keypair before balance
+checks and gRPC subscriptions. Set `sender_private_key` only when a provider
+uses a different path. Older configs may keep `sender_pubkey`; when present,
+the benchmark verifies that it matches the keypair. A `[[sender]]` section is
+no longer needed.
 
 Each per-provider sender needs `runs × (tip_amount + 50_000)` lamports.
 
@@ -301,7 +299,6 @@ cargo run --release -- report \
 
 ```
 Selected providers: rpcfast-astralane, rpcfast-nozomi
-Default sender: <pubkey>
 Selected receiver: <pubkey>
 Preflight: sender <A> balance 50000000 lamports (need >= 21000000 for 20 runs × providers [rpcfast-astralane])
 Preflight: sender <B> balance 50000000 lamports (need >= 21000000 for 20 runs × providers [rpcfast-nozomi])

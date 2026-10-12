@@ -1,5 +1,7 @@
 #[path = "../rpc_http.rs"]
 mod rpc_http;
+#[path = "../sender.rs"]
+mod sender;
 
 use std::fs;
 use std::str::FromStr;
@@ -22,6 +24,7 @@ use solana_sdk::transaction::Transaction;
 use solana_system_interface::instruction as system_instruction;
 
 use crate::rpc_http::{HttpHeaderConfig, merge_http_headers, new_rpc_client};
+use crate::sender::load_provider_sender;
 
 const MIN_BUNDLE_SIZE: usize = 2;
 const MAX_BUNDLE_SIZE: usize = 4;
@@ -60,8 +63,6 @@ struct BenchConfigFile {
     #[serde(default)]
     global: Vec<GlobalConfig>,
     #[serde(default)]
-    sender: Vec<SenderConfig>,
-    #[serde(default)]
     provider: Vec<ProviderConfig>,
 }
 
@@ -76,12 +77,6 @@ struct GlobalConfig {
     rpc_headers: HttpHeaderConfig,
     #[serde(default)]
     send_tx_rpc_headers: HttpHeaderConfig,
-}
-
-#[derive(Debug, Deserialize)]
-struct SenderConfig {
-    pubkey: String,
-    private_key: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -208,29 +203,14 @@ fn load_config(args: &Args) -> Result<RuntimeConfig> {
         .global
         .first()
         .ok_or_else(|| anyhow!("config requires at least one [[global]] section"))?;
-    let default_sender = config_file
-        .sender
-        .first()
-        .ok_or_else(|| anyhow!("config requires at least one [[sender]] section"))?;
     let provider = select_provider(&config_file.provider, args.provider.as_deref())?;
 
-    if provider.sender_pubkey.is_some() != provider.sender_private_key.is_some() {
-        return Err(anyhow!(
-            "provider '{}' must set both sender_pubkey and sender_private_key together",
-            provider.name
-        ));
-    }
-    let sender_pubkey_text = provider
-        .sender_pubkey
-        .as_deref()
-        .unwrap_or(&default_sender.pubkey);
-    let sender_pubkey = Pubkey::from_str(sender_pubkey_text)
-        .with_context(|| format!("invalid sender pubkey for provider '{}'", provider.name))?;
-    let sender_keypair_path = provider
-        .sender_private_key
-        .as_deref()
-        .unwrap_or(&default_sender.private_key);
-    let sender = read_keypair(sender_keypair_path, sender_pubkey)?;
+    let (_, sender) = load_provider_sender(
+        &args.config,
+        &provider.name,
+        provider.sender_private_key.as_deref(),
+        provider.sender_pubkey.as_deref(),
+    )?;
 
     let tip_account_text = args
         .tip_account
@@ -314,23 +294,6 @@ fn select_provider<'a>(
             }),
         None => Ok(&providers[0]),
     }
-}
-
-fn read_keypair(path: &str, expected_pubkey: Pubkey) -> Result<Keypair> {
-    let keypair_text = fs::read_to_string(path)
-        .with_context(|| format!("failed to read sender keypair: {path}"))?;
-    let keypair_bytes: Vec<u8> = serde_json::from_str(&keypair_text)
-        .with_context(|| format!("invalid keypair JSON in {path}"))?;
-    let keypair =
-        Keypair::try_from(keypair_bytes.as_slice()).context("invalid sender keypair bytes")?;
-    if keypair.pubkey() != expected_pubkey {
-        return Err(anyhow!(
-            "sender pubkey mismatch: config has {}, keypair file has {}",
-            expected_pubkey,
-            keypair.pubkey()
-        ));
-    }
-    Ok(keypair)
 }
 
 #[allow(clippy::too_many_arguments)]

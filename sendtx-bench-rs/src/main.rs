@@ -1,5 +1,6 @@
 mod grpc_tracker;
 mod rpc_http;
+mod sender;
 
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
@@ -37,6 +38,7 @@ use solana_system_interface::instruction as system_instruction;
 
 use crate::grpc_tracker::{GrpcTracker, LandingEvent};
 use crate::rpc_http::{HttpHeaderConfig, merge_http_headers, new_rpc_client};
+use crate::sender::{load_provider_sender, read_sender_keypair};
 
 const SOL_FEE_BUFFER_LAMPORTS: u64 = 50_000;
 const CONFIRM_TIMEOUT: Duration = Duration::from_secs(2);
@@ -81,15 +83,7 @@ struct BenchConfigFile {
     #[serde(default)]
     global: Vec<GlobalConfig>,
     #[serde(default)]
-    sender: Vec<ActorConfig>,
-    #[serde(default)]
     provider: Vec<ProviderConfig>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ActorConfig {
-    pubkey: String,
-    private_key: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -175,7 +169,6 @@ struct RuntimeConfig {
 }
 
 struct LoadedConfig {
-    default_sender_pubkey: Pubkey,
     providers: Vec<ProviderRuntime>,
     grpc_url: String,
     grpc_x_token: Option<String>,
@@ -534,16 +527,13 @@ fn main() -> Result<()> {
         ));
     }
     let loaded = LoadedConfig::from_toml(&args)?;
-    let provider_selector = args.providers.as_deref().or(args.provider.as_deref());
-    let selected_providers = resolve_selected_providers(&loaded.providers, provider_selector)?;
+    let selected_providers = loaded.providers.clone();
     let selected_names = selected_providers
         .iter()
         .map(|p| p.name.clone())
         .collect::<Vec<_>>();
 
     println!("Selected providers: {}", selected_names.join(", "));
-    println!("Default sender: {}", loaded.default_sender_pubkey);
-
     preflight_balance_check(&selected_providers, args.runs)?;
 
     let mut sender_pubkey_set: HashSet<String> = HashSet::new();
@@ -658,26 +648,15 @@ fn main() -> Result<()> {
     }
 
     let performance = compute_provider_performance(&benchmarks);
-    let markdown = render_markdown_report(
-        &benchmarks,
-        &performance,
-        loaded.default_sender_pubkey,
-        args.runs,
-        &selected_names,
-    );
+    let markdown = render_markdown_report(&benchmarks, &performance, args.runs, &selected_names);
     let filename = args
         .markdown_output
         .or(args.output)
         .unwrap_or_else(|| format!("provider_comparison_{}.md", timestamp_for_filename()));
     fs::write(&filename, markdown)
         .with_context(|| format!("failed to write markdown output file: {}", filename))?;
-    let comparison_json = build_multi_provider_output_data(
-        &benchmarks,
-        &performance,
-        &loaded,
-        args.runs,
-        &selected_names,
-    );
+    let comparison_json =
+        build_multi_provider_output_data(&benchmarks, &performance, args.runs, &selected_names);
     let json_filename = derive_json_report_filename(&filename);
     fs::write(
         &json_filename,
@@ -698,9 +677,6 @@ impl LoadedConfig {
         let config_file: BenchConfigFile =
             toml::from_str(&config_text).context("invalid config TOML format")?;
 
-        if config_file.sender.is_empty() {
-            return Err(anyhow!("config requires at least one [[sender]] section"));
-        }
         if config_file.global.is_empty() {
             return Err(anyhow!("config requires at least one [[global]] section"));
         }
@@ -712,31 +688,20 @@ impl LoadedConfig {
             .first()
             .ok_or_else(|| anyhow!("config requires at least one [[global]] section"))?;
 
-        let selected_sender = config_file
-            .sender
-            .first()
-            .ok_or_else(|| anyhow!("config requires at least one [[sender]] section"))?;
-        let sender_pubkey =
-            Pubkey::from_str(&selected_sender.pubkey).context("invalid sender pubkey in config")?;
-
-        let mut providers = Vec::with_capacity(config_file.provider.len());
-        for provider in &config_file.provider {
-            let provider_sender_pubkey = match &provider.sender_pubkey {
-                Some(value) => Pubkey::from_str(value).with_context(|| {
-                    format!("invalid sender_pubkey at provider '{}'", provider.name)
-                })?,
-                None => sender_pubkey,
-            };
-            let provider_sender_private_key = match &provider.sender_private_key {
-                Some(value) => value.clone(),
-                None => selected_sender.private_key.clone(),
-            };
-            if provider.sender_pubkey.is_some() != provider.sender_private_key.is_some() {
-                return Err(anyhow!(
-                    "provider '{}' must set both sender_pubkey and sender_private_key together",
-                    provider.name
-                ));
-            }
+        let provider_indices = resolve_selected_provider_indices(
+            &config_file.provider,
+            args.providers.as_deref().or(args.provider.as_deref()),
+        )?;
+        let mut providers = Vec::with_capacity(provider_indices.len());
+        for index in provider_indices {
+            let provider = &config_file.provider[index];
+            let (sender_key_path, sender) = load_provider_sender(
+                &args.config,
+                &provider.name,
+                provider.sender_private_key.as_deref(),
+                provider.sender_pubkey.as_deref(),
+            )?;
+            let provider_sender_pubkey = sender.pubkey();
             let mut tip_accounts = Vec::with_capacity(provider.tip_accounts.len());
             for (idx, tip_account) in provider.tip_accounts.iter().enumerate() {
                 let parsed = Pubkey::from_str(tip_account).with_context(|| {
@@ -773,7 +738,7 @@ impl LoadedConfig {
                 })?,
                 send_target: build_send_target_config(provider, global)?,
                 sender_pubkey: provider_sender_pubkey,
-                sender_private_key_path: provider_sender_private_key,
+                sender_private_key_path: sender_key_path,
                 tip_accounts,
                 tip_amount: provider.tip_amount.unwrap_or(global.tip_amount),
                 compute_unit_limit: provider
@@ -786,7 +751,6 @@ impl LoadedConfig {
         }
 
         Ok(Self {
-            default_sender_pubkey: sender_pubkey,
             providers,
             grpc_url: global.grpc_url.clone(),
             grpc_x_token: global.grpc_x_token.clone(),
@@ -950,7 +914,13 @@ struct ProviderRunner {
 impl ProviderRunner {
     fn new(config: &RuntimeConfig) -> Result<Self> {
         let rpc_client = new_rpc_client(config.rpc_url.clone(), &config.rpc_headers)?;
-        let sender = read_sender_keypair(&config.sender_private_key_path, config.sender_pubkey)?;
+        let sender = read_sender_keypair(&config.sender_private_key_path)?;
+        if sender.pubkey() != config.sender_pubkey {
+            return Err(anyhow!(
+                "sender keypair changed since config load: {}",
+                config.sender_private_key_path
+            ));
+        }
 
         let (initial_hash, _) = rpc_client
             .get_latest_blockhash_with_commitment(CommitmentConfig::processed())
@@ -1293,39 +1263,19 @@ fn run_transfer(
     })
 }
 
-fn read_sender_keypair(path: &str, expected_pubkey: Pubkey) -> Result<Keypair> {
-    let secret_key_file = fs::read_to_string(path)
-        .with_context(|| format!("failed to read sender keypair: {}", path))?;
-    let secret_key: Vec<u8> = serde_json::from_str(&secret_key_file)
-        .with_context(|| format!("invalid keypair JSON in {}", path))?;
-    let keypair =
-        Keypair::try_from(secret_key.as_slice()).context("invalid sender keypair bytes")?;
-    if keypair.pubkey() != expected_pubkey {
-        return Err(anyhow!(
-            "sender pubkey mismatch: config has {}, keypair file has {}",
-            expected_pubkey,
-            keypair.pubkey()
-        ));
-    }
-    Ok(keypair)
-}
-
-fn resolve_selected_providers(
-    providers: &[ProviderRuntime],
+fn resolve_selected_provider_indices(
+    providers: &[ProviderConfig],
     selector: Option<&str>,
-) -> Result<Vec<ProviderRuntime>> {
+) -> Result<Vec<usize>> {
     match selector {
-        None => providers
-            .first()
-            .map(|p| vec![p.clone()])
-            .ok_or_else(|| anyhow!("config requires at least one [[provider]] section")),
+        None => Ok(vec![0]),
         Some(value) => {
             let trimmed = value.trim();
             if trimmed.is_empty() {
                 return Err(anyhow!("--providers cannot be empty"));
             }
             if trimmed.eq_ignore_ascii_case("all") {
-                return Ok(providers.to_vec());
+                return Ok((0..providers.len()).collect());
             }
 
             let available = providers
@@ -1337,15 +1287,19 @@ fn resolve_selected_providers(
             let mut seen = HashSet::new();
             let mut selected = Vec::new();
             for name in trimmed.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-                let provider = providers.iter().find(|p| p.name == name).ok_or_else(|| {
-                    anyhow!(
-                        "provider '{}' not found, available provider names: {}",
-                        name,
-                        available
-                    )
-                })?;
+                let (index, provider) = providers
+                    .iter()
+                    .enumerate()
+                    .find(|(_, p)| p.name == name)
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "provider '{}' not found, available provider names: {}",
+                            name,
+                            available
+                        )
+                    })?;
                 if seen.insert(provider.name.clone()) {
-                    selected.push(provider.clone());
+                    selected.push(index);
                 }
             }
 
@@ -1560,7 +1514,6 @@ fn derive_json_report_filename(markdown_filename: &str) -> String {
 fn build_multi_provider_output_data<'a>(
     benchmarks: &'a [ProviderBenchmark],
     performance: &HashMap<String, ProviderPerformance>,
-    loaded: &LoadedConfig,
     runs: usize,
     selected_providers: &[String],
 ) -> MultiProviderOutputData<'a> {
@@ -1586,7 +1539,7 @@ fn build_multi_provider_output_data<'a>(
 
     MultiProviderOutputData {
         generated_at: chrono::Local::now().to_rfc3339(),
-        sender_pubkey: format_sender_summary(benchmarks, loaded.default_sender_pubkey),
+        sender_pubkey: format_sender_summary(benchmarks),
         runs_per_provider: runs,
         selected_providers: selected_providers.to_vec(),
         providers,
@@ -1646,7 +1599,6 @@ fn run_report_from_json(input_path: &str, output_path: Option<&str>) -> Result<(
     let markdown = render_markdown_report(
         &benchmarks,
         &performance,
-        Pubkey::default(),
         input.runs_per_provider,
         &selected_names,
     );
@@ -1810,7 +1762,6 @@ fn compute_provider_performance(
 fn render_markdown_report(
     benchmarks: &[ProviderBenchmark],
     performance: &HashMap<String, ProviderPerformance>,
-    default_sender: Pubkey,
     runs: usize,
     selected_providers: &[String],
 ) -> String {
@@ -1822,7 +1773,7 @@ fn render_markdown_report(
     ));
     out.push_str(&format!(
         "- Sender(s): `{}`\n",
-        format_sender_summary(benchmarks, default_sender)
+        format_sender_summary(benchmarks)
     ));
     out.push_str(&format!("- Runs per provider: `{}`\n", runs));
     out.push_str(&format!(
@@ -1873,7 +1824,7 @@ fn render_markdown_report(
     out
 }
 
-fn format_sender_summary(benchmarks: &[ProviderBenchmark], default_sender: Pubkey) -> String {
+fn format_sender_summary(benchmarks: &[ProviderBenchmark]) -> String {
     let mut senders = benchmarks
         .iter()
         .map(|benchmark| benchmark.sender_pubkey.to_string())
@@ -1881,7 +1832,7 @@ fn format_sender_summary(benchmarks: &[ProviderBenchmark], default_sender: Pubke
     senders.sort();
     senders.dedup();
     match senders.len() {
-        0 => default_sender.to_string(),
+        0 => "none".to_string(),
         1 => senders[0].clone(),
         _ => format!("multiple ({})", senders.join(", ")),
     }
@@ -1895,4 +1846,67 @@ fn panic_payload_to_string(payload: Box<dyn Any + Send>) -> String {
         return format!("provider worker panicked: {}", message);
     }
     "provider worker panicked".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn config_derives_sender_without_sender_section_or_pubkey() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "sendtx-bench-config-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(root.join("wallets")).unwrap();
+        let keypair = Keypair::new();
+        fs::write(
+            root.join("wallets/alpha.json"),
+            serde_json::to_vec(&keypair.to_bytes().to_vec()).unwrap(),
+        )
+        .unwrap();
+        let config_path = root.join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+[[global]]
+tip_amount = 0
+compute_unit_limit = 100000
+compute_unit_price_micro_lamports = 0
+rpc_url = "http://localhost"
+send_tx_rpc_url = "http://localhost"
+grpc_url = "http://localhost"
+
+[[provider]]
+name = "alpha"
+
+[[provider]]
+name = "unselected-without-keypair"
+"#,
+        )
+        .unwrap();
+        let args = Args {
+            command: None,
+            runs: 1,
+            output: None,
+            config: config_path.to_string_lossy().into_owned(),
+            providers: None,
+            provider: None,
+            markdown_output: None,
+        };
+
+        let loaded = LoadedConfig::from_toml(&args).unwrap();
+        assert_eq!(loaded.providers[0].sender_pubkey, keypair.pubkey());
+        assert_eq!(
+            loaded.providers[0].sender_private_key_path,
+            root.join("wallets/alpha.json").to_string_lossy()
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
 }
