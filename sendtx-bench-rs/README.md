@@ -136,9 +136,13 @@ compute_unit_price_micro_lamports = 100_000
 
 # Default RPC URL for blockhash refresh + balance checks.
 rpc_url = "https://solana-rpc.example.com/?api_key=..."
+# Optional headers sent only to rpc_url.
+# rpc_headers = { "Authorization" = "Bearer <RPC token>", "x-api-key" = "<RPC key>" }
 
 # Default sendTransaction URL (used by HTTP providers that don't override).
 send_tx_rpc_url = "https://beam.rpcfast.com/?api_key=..."
+# Optional headers sent only to send_tx_rpc_url.
+# send_tx_rpc_headers = { "Authorization" = "Bearer <send token>" }
 
 # Default send transport is "http". Set "beam-quic" globally or per provider
 # to send through Beam's QUIC submit endpoint instead of JSON-RPC.
@@ -181,10 +185,18 @@ sender_private_key = "providerA_sender_pk.json"
 
 # Optional per-provider overrides for global defaults:
 # rpc_url = "..."
+# rpc_headers = { "x-api-key" = "<provider RPC key>" }
+# send_tx_rpc_headers = { "x-api-key" = "<provider send key>" }
 # tip_amount = 1_500_000
 # compute_unit_limit = 100_000
 # compute_unit_price_micro_lamports = 200_000
 ```
+
+Header maps are optional. A provider inherits its matching global map, adds new
+headers, and overrides global values with the same header name
+case-insensitively. `rpc_headers` applies to balance and blockhash requests;
+`send_tx_rpc_headers` applies to HTTP `sendTransaction` requests and to the
+`beam-send-bundle` helper. Beam QUIC submission does not use HTTP headers.
 
 Beam QUIC provider example:
 

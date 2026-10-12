@@ -11,6 +11,10 @@ compute_unit_price_micro_lamports = 100000
 # rpc_url is used for regular RPC calls, send_tx_rpc_url is used for sending transactions only.
 rpc_url = "https://solana-rpc.rpcfast.com/?api_key="
 send_tx_rpc_url = "https://beam.rpcfast.com/?api_key="
+# Optional headers for each HTTP endpoint. Provider entries inherit these maps
+# and can add or override individual names.
+# rpc_headers = { "Authorization" = "Bearer your-rpc-token", "x-api-key" = "your-rpc-key" }
+# send_tx_rpc_headers = { "Authorization" = "Bearer your-send-token" }
 # send_transport defaults to "http". Set "beam-quic" globally or per provider
 # to submit through the Beam QUIC endpoint instead of JSON-RPC sendTransaction.
 # send_transport = "beam-quic"
@@ -38,6 +42,8 @@ name = "rpcfast-astralane"
 # Optional overrides for global defaults:
 # rpc_url = "https://custom-rpc-url-for-this-provider"
 # send_tx_rpc_url
+# rpc_headers = { "x-api-key" = "provider-rpc-key" }
+# send_tx_rpc_headers = { "x-api-key" = "provider-send-key" }
 # tip_amount = 1500000
 # compute_unit_limit = 12000
 # compute_unit_price_micro_lamports = 200000

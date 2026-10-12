@@ -1,4 +1,5 @@
 mod grpc_tracker;
+mod rpc_http;
 
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
@@ -22,10 +23,9 @@ use beam_quic_client::{
 use clap::{Parser, Subcommand};
 use rand::Rng;
 use reqwest::blocking::Client as HttpClient;
-use reqwest::header::{CONNECTION, CONTENT_TYPE};
+use reqwest::header::{CONNECTION, CONTENT_TYPE, HeaderMap};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use solana_client::rpc_client::RpcClient;
 use solana_client::rpc_config::{RpcSendTransactionConfig, UiTransactionEncoding};
 use solana_commitment_config::CommitmentConfig;
 use solana_compute_budget_interface::ComputeBudgetInstruction;
@@ -36,6 +36,7 @@ use solana_sdk::transaction::{Transaction, VersionedTransaction};
 use solana_system_interface::instruction as system_instruction;
 
 use crate::grpc_tracker::{GrpcTracker, LandingEvent};
+use crate::rpc_http::{HttpHeaderConfig, merge_http_headers, new_rpc_client};
 
 const SOL_FEE_BUFFER_LAMPORTS: u64 = 50_000;
 const CONFIRM_TIMEOUT: Duration = Duration::from_secs(2);
@@ -98,6 +99,10 @@ struct ProviderConfig {
     send_transport: Option<SendTransport>,
     rpc_url: Option<String>,
     send_tx_rpc_url: Option<String>,
+    #[serde(default)]
+    rpc_headers: HttpHeaderConfig,
+    #[serde(default)]
+    send_tx_rpc_headers: HttpHeaderConfig,
     beam_quic_endpoint: Option<String>,
     beam_quic_api_key: Option<String>,
     beam_quic_provider: Option<String>,
@@ -124,6 +129,10 @@ struct GlobalConfig {
     compute_unit_price_micro_lamports: u64,
     rpc_url: String,
     send_tx_rpc_url: String,
+    #[serde(default)]
+    rpc_headers: HttpHeaderConfig,
+    #[serde(default)]
+    send_tx_rpc_headers: HttpHeaderConfig,
     #[serde(default)]
     beam_quic_endpoint: Option<String>,
     #[serde(default)]
@@ -154,6 +163,8 @@ struct RuntimeConfig {
     provider_name: String,
     rpc_url: String,
     send_tx_rpc_url: String,
+    rpc_headers: HeaderMap,
+    send_tx_rpc_headers: HeaderMap,
     send_target: SendTargetConfig,
     sender_pubkey: Pubkey,
     sender_private_key_path: String,
@@ -177,6 +188,8 @@ struct ProviderRuntime {
     name: String,
     rpc_url: String,
     send_tx_rpc_url: String,
+    rpc_headers: HeaderMap,
+    send_tx_rpc_headers: HeaderMap,
     send_target: SendTargetConfig,
     sender_pubkey: Pubkey,
     sender_private_key_path: String,
@@ -311,11 +324,12 @@ struct PersistentRpcSender {
 }
 
 impl PersistentRpcSender {
-    fn new(rpc_url: String) -> Result<Self> {
+    fn new(rpc_url: String, headers: HeaderMap) -> Result<Self> {
         // HTTP/2 negotiated via ALPN (rustls advertises h2 by default). h2 multiplexes
         // requests over a single TCP connection, so we keep just one warm in the pool
         // and rely on the connection's stream concurrency for parallel sends.
         let client = HttpClient::builder()
+            .default_headers(headers)
             .pool_max_idle_per_host(1)
             .pool_idle_timeout(Duration::from_secs(90))
             .timeout(Duration::from_secs(10))
@@ -489,6 +503,7 @@ impl TransactionSender {
         match &config.send_target {
             SendTargetConfig::Http => Ok(Self::Http(PersistentRpcSender::new(
                 config.send_tx_rpc_url.clone(),
+                config.send_tx_rpc_headers.clone(),
             )?)),
             SendTargetConfig::BeamQuic(beam_config) => {
                 Ok(Self::BeamQuic(BeamQuicSender::new(beam_config.clone())?))
@@ -573,6 +588,8 @@ fn main() -> Result<()> {
                 provider_name: provider.name.clone(),
                 rpc_url: provider.rpc_url.clone(),
                 send_tx_rpc_url: provider.send_tx_rpc_url.clone(),
+                rpc_headers: provider.rpc_headers.clone(),
+                send_tx_rpc_headers: provider.send_tx_rpc_headers.clone(),
                 send_target: provider.send_target.clone(),
                 sender_pubkey: provider.sender_pubkey,
                 sender_private_key_path: provider.sender_private_key_path.clone(),
@@ -740,6 +757,20 @@ impl LoadedConfig {
                     .send_tx_rpc_url
                     .clone()
                     .unwrap_or_else(|| global.send_tx_rpc_url.clone()),
+                rpc_headers: merge_http_headers(&global.rpc_headers, &provider.rpc_headers)
+                    .with_context(|| {
+                        format!("invalid rpc_headers at provider '{}'", provider.name)
+                    })?,
+                send_tx_rpc_headers: merge_http_headers(
+                    &global.send_tx_rpc_headers,
+                    &provider.send_tx_rpc_headers,
+                )
+                .with_context(|| {
+                    format!(
+                        "invalid send_tx_rpc_headers at provider '{}'",
+                        provider.name
+                    )
+                })?,
                 send_target: build_send_target_config(provider, global)?,
                 sender_pubkey: provider_sender_pubkey,
                 sender_private_key_path: provider_sender_private_key,
@@ -918,8 +949,7 @@ struct ProviderRunner {
 
 impl ProviderRunner {
     fn new(config: &RuntimeConfig) -> Result<Self> {
-        let rpc_client =
-            RpcClient::new_with_commitment(config.rpc_url.clone(), CommitmentConfig::processed());
+        let rpc_client = new_rpc_client(config.rpc_url.clone(), &config.rpc_headers)?;
         let sender = read_sender_keypair(&config.sender_private_key_path, config.sender_pubkey)?;
 
         let (initial_hash, _) = rpc_client
@@ -928,17 +958,17 @@ impl ProviderRunner {
         drop(rpc_client);
         let blockhash = Arc::new(RwLock::new(initial_hash));
         let shutdown = Arc::new(AtomicBool::new(false));
+        let refresh_rpc_client = new_rpc_client(config.rpc_url.clone(), &config.rpc_headers)?;
 
         let blockhash_clone = Arc::clone(&blockhash);
         let shutdown_clone = Arc::clone(&shutdown);
-        let rpc_url = config.rpc_url.clone();
         let provider_name = config.provider_name.clone();
         let blockhash_thread = thread::Builder::new()
             .name(format!("blockhash-refresh-{}", provider_name))
             .spawn(move || {
-                let client = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::processed());
                 while !shutdown_clone.load(Ordering::Relaxed) {
-                    match client.get_latest_blockhash_with_commitment(CommitmentConfig::processed())
+                    match refresh_rpc_client
+                        .get_latest_blockhash_with_commitment(CommitmentConfig::processed())
                     {
                         Ok((hash, _)) => {
                             if let Ok(mut guard) = blockhash_clone.write() {
@@ -1331,7 +1361,7 @@ fn resolve_selected_providers(
 
 fn preflight_balance_check(providers: &[ProviderRuntime], runs_per_provider: usize) -> Result<()> {
     let mut required_by_sender: HashMap<Pubkey, u64> = HashMap::new();
-    let mut rpc_for_sender: HashMap<Pubkey, String> = HashMap::new();
+    let mut rpc_for_sender: HashMap<Pubkey, (String, HeaderMap)> = HashMap::new();
     let mut providers_per_sender: HashMap<Pubkey, Vec<String>> = HashMap::new();
 
     for provider in providers {
@@ -1347,7 +1377,7 @@ fn preflight_balance_check(providers: &[ProviderRuntime], runs_per_provider: usi
         *entry = entry.saturating_add(total);
         rpc_for_sender
             .entry(provider.sender_pubkey)
-            .or_insert_with(|| provider.rpc_url.clone());
+            .or_insert_with(|| (provider.rpc_url.clone(), provider.rpc_headers.clone()));
         providers_per_sender
             .entry(provider.sender_pubkey)
             .or_default()
@@ -1355,10 +1385,10 @@ fn preflight_balance_check(providers: &[ProviderRuntime], runs_per_provider: usi
     }
 
     for (sender, required) in &required_by_sender {
-        let rpc_url = rpc_for_sender
+        let (rpc_url, rpc_headers) = rpc_for_sender
             .get(sender)
             .expect("rpc url recorded for sender");
-        let client = RpcClient::new_with_commitment(rpc_url.clone(), CommitmentConfig::processed());
+        let client = new_rpc_client(rpc_url.clone(), rpc_headers)?;
         let balance = client
             .get_balance(sender)
             .with_context(|| format!("failed to fetch SOL balance for sender {}", sender))?;

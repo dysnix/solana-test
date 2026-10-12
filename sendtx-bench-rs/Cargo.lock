@@ -3466,6 +3466,7 @@ dependencies = [
  "solana-client",
  "solana-commitment-config",
  "solana-compute-budget-interface",
+ "solana-rpc-client",
  "solana-sdk",
  "solana-system-interface 2.0.0",
  "tokio",

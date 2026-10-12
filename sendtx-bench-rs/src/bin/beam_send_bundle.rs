@@ -1,3 +1,6 @@
+#[path = "../rpc_http.rs"]
+mod rpc_http;
+
 use std::fs;
 use std::str::FromStr;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -7,11 +10,9 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use clap::Parser;
 use reqwest::blocking::Client as HttpClient;
-use reqwest::header::CONTENT_TYPE;
+use reqwest::header::{CONTENT_TYPE, HeaderMap};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use solana_client::rpc_client::RpcClient;
-use solana_commitment_config::CommitmentConfig;
 use solana_compute_budget_interface::ComputeBudgetInstruction;
 use solana_sdk::hash::Hash;
 use solana_sdk::instruction::Instruction;
@@ -19,6 +20,8 @@ use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::{Keypair, Signer};
 use solana_sdk::transaction::Transaction;
 use solana_system_interface::instruction as system_instruction;
+
+use crate::rpc_http::{HttpHeaderConfig, merge_http_headers, new_rpc_client};
 
 const MIN_BUNDLE_SIZE: usize = 2;
 const MAX_BUNDLE_SIZE: usize = 4;
@@ -69,6 +72,10 @@ struct GlobalConfig {
     compute_unit_price_micro_lamports: u64,
     rpc_url: String,
     send_tx_rpc_url: String,
+    #[serde(default)]
+    rpc_headers: HttpHeaderConfig,
+    #[serde(default)]
+    send_tx_rpc_headers: HttpHeaderConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -82,6 +89,10 @@ struct ProviderConfig {
     name: String,
     rpc_url: Option<String>,
     send_tx_rpc_url: Option<String>,
+    #[serde(default)]
+    rpc_headers: HttpHeaderConfig,
+    #[serde(default)]
+    send_tx_rpc_headers: HttpHeaderConfig,
     sender_pubkey: Option<String>,
     sender_private_key: Option<String>,
     #[serde(default)]
@@ -95,6 +106,8 @@ struct RuntimeConfig {
     provider_name: String,
     rpc_url: String,
     beam_url: String,
+    rpc_headers: HeaderMap,
+    beam_headers: HeaderMap,
     sender: Keypair,
     tip_account: Pubkey,
     tip_amount: u64,
@@ -107,7 +120,7 @@ fn main() -> Result<()> {
     validate_bundle_size(args.bundle_size)?;
     let config = load_config(&args)?;
 
-    let rpc = RpcClient::new_with_commitment(config.rpc_url.clone(), CommitmentConfig::processed());
+    let rpc = new_rpc_client(config.rpc_url.clone(), &config.rpc_headers)?;
     let sender_pubkey = config.sender.pubkey();
     let balance = rpc
         .get_balance(&sender_pubkey)
@@ -167,7 +180,7 @@ fn main() -> Result<()> {
     }
 
     let started = Instant::now();
-    let result = send_bundle(&config.beam_url, &transactions, nonce)?;
+    let result = send_bundle(&config.beam_url, &config.beam_headers, &transactions, nonce)?;
     println!(
         "Beam accepted sendBundle in {:.3} ms",
         started.elapsed().as_secs_f64() * 1_000.0
@@ -253,6 +266,18 @@ fn load_config(args: &Args) -> Result<RuntimeConfig> {
             .send_tx_rpc_url
             .clone()
             .unwrap_or_else(|| global.send_tx_rpc_url.clone()),
+        rpc_headers: merge_http_headers(&global.rpc_headers, &provider.rpc_headers)
+            .with_context(|| format!("invalid rpc_headers at provider '{}'", provider.name))?,
+        beam_headers: merge_http_headers(
+            &global.send_tx_rpc_headers,
+            &provider.send_tx_rpc_headers,
+        )
+        .with_context(|| {
+            format!(
+                "invalid send_tx_rpc_headers at provider '{}'",
+                provider.name
+            )
+        })?,
         sender,
         tip_account,
         tip_amount,
@@ -377,7 +402,12 @@ fn build_bundle_instructions(
     Ok(bundle)
 }
 
-fn send_bundle(beam_url: &str, transactions: &[Transaction], request_id: u128) -> Result<Value> {
+fn send_bundle(
+    beam_url: &str,
+    headers: &HeaderMap,
+    transactions: &[Transaction],
+    request_id: u128,
+) -> Result<Value> {
     let encoded_transactions = transactions
         .iter()
         .map(|transaction| {
@@ -396,6 +426,7 @@ fn send_bundle(beam_url: &str, transactions: &[Transaction], request_id: u128) -
         ]
     });
     let client = HttpClient::builder()
+        .default_headers(headers.clone())
         .timeout(Duration::from_secs(15))
         .build()
         .context("failed to build HTTP client")?;
